@@ -85,6 +85,19 @@ from n2v.nn.layers.causal_mask import CausalMask as _CausalMask
 from n2v.nn.layers.relative_attention_bias_t5 import RelativeAttentionBiasT5 as _RelAttnBiasT5
 from n2v.nn.layers.relative_position_bias_table import RelativePositionBiasTable as _RelPosBiasTable
 
+# Phase 4 ports: embeddings & tokens
+from . import embedding_reach
+from . import positional_encoding_reach
+from . import rope_reach
+from . import cls_token_reach
+from . import distillation_token_reach
+from . import segment_embedding_reach
+
+from n2v.nn.layers.cls_token import CLSToken as _CLSToken
+from n2v.nn.layers.distillation_token import DistillationToken as _DistillationToken
+from n2v.nn.layers.positional_encoding import PositionalEncoding as _PositionalEncoding
+from n2v.nn.layers.rope import RoPE as _RoPE
+
 # ONNX types (onnx2torch is a required dependency)
 from onnx2torch.node_converters.global_average_pool import (
     OnnxGlobalAveragePool,
@@ -309,6 +322,18 @@ def _reach_layer_star(layer: nn.Module, input_sets: List, method: str, **kwargs)
             "SoftmaxAttention requires multi-input (Q, K, V) dispatch via n2v.nn.reach."
         )
 
+    # ----- Phase 4: embeddings & tokens -----
+    elif isinstance(layer, nn.Embedding):
+        return embedding_reach.embedding_star(layer, input_sets)
+    elif isinstance(layer, _PositionalEncoding):
+        return positional_encoding_reach.positional_encoding_star(layer, input_sets)
+    elif isinstance(layer, _RoPE):
+        return rope_reach.rope_star(layer, input_sets)
+    elif isinstance(layer, _CLSToken):
+        return cls_token_reach.cls_token_star(layer, input_sets)
+    elif isinstance(layer, _DistillationToken):
+        return distillation_token_reach.distillation_token_star(layer, input_sets)
+
     elif isinstance(layer, (nn.Identity, nn.Dropout, nn.Dropout2d, nn.Dropout3d)):
         return input_sets
 
@@ -400,6 +425,18 @@ def _reach_layer_zono(layer: nn.Module, input_sets: List, method: str, **kwargs)
         return causal_mask_reach.causal_mask_zono(layer, input_sets)
     elif isinstance(layer, (_RelAttnBiasT5, _RelPosBiasTable)):
         return relative_attention_bias_t5_reach.relative_attention_bias_t5_zono(layer, input_sets)
+
+    # ----- Phase 4: embeddings & tokens -----
+    elif isinstance(layer, nn.Embedding):
+        return embedding_reach.embedding_zono(layer, input_sets)
+    elif isinstance(layer, _PositionalEncoding):
+        return positional_encoding_reach.positional_encoding_zono(layer, input_sets)
+    elif isinstance(layer, _RoPE):
+        return rope_reach.rope_zono(layer, input_sets)
+    elif isinstance(layer, _CLSToken):
+        return cls_token_reach.cls_token_zono(layer, input_sets)
+    elif isinstance(layer, _DistillationToken):
+        return distillation_token_reach.distillation_token_zono(layer, input_sets)
 
     elif isinstance(layer, (nn.Identity, nn.Dropout, nn.Dropout2d, nn.Dropout3d)):
         return input_sets
@@ -511,6 +548,18 @@ def _reach_layer_box(layer: nn.Module, input_sets: List, method: str, **kwargs) 
         raise NotImplementedError(
             "SoftmaxAttention requires multi-input (Q, K, V) dispatch via n2v.nn.reach."
         )
+
+    # ----- Phase 4: embeddings & tokens -----
+    elif isinstance(layer, nn.Embedding):
+        return embedding_reach.embedding_box(layer, input_sets)
+    elif isinstance(layer, _PositionalEncoding):
+        return positional_encoding_reach.positional_encoding_box(layer, input_sets)
+    elif isinstance(layer, _RoPE):
+        return rope_reach.rope_box(layer, input_sets)
+    elif isinstance(layer, _CLSToken):
+        return cls_token_reach.cls_token_box(layer, input_sets)
+    elif isinstance(layer, _DistillationToken):
+        return distillation_token_reach.distillation_token_box(layer, input_sets)
 
     elif isinstance(layer, (nn.Identity, nn.Dropout, nn.Dropout2d, nn.Dropout3d)):
         return input_sets
