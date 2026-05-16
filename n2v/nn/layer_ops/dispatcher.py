@@ -46,6 +46,27 @@ from . import grn_reach
 from n2v.nn.layers.rms_norm import RMSNorm as _RMSNorm
 from n2v.nn.layers.grn import GRN as _GRN
 
+# Phase 2 ports: MLP / skip / DAG layers
+from . import layerscale_reach
+from . import drop_path_reach
+from . import add_with_frozen_skip_reach
+from . import concat_with_frozen_skip_reach
+from . import dag_add_reach
+from . import dag_concat_reach
+from . import concat2d_reach
+from . import selective_feature_fusion_reach
+from . import mix_ffn_reach
+
+from n2v.nn.layers.layer_scale import LayerScale as _LayerScale
+from n2v.nn.layers.drop_path import DropPath as _DropPath
+from n2v.nn.layers.add_with_frozen_skip import AddWithFrozenSkip as _AddWithFrozenSkip
+from n2v.nn.layers.concat_with_frozen_skip import ConcatWithFrozenSkip as _ConcatWithFrozenSkip
+from n2v.nn.layers.dag_add import DagAdd as _DagAdd
+from n2v.nn.layers.dag_concat import DagConcat as _DagConcat
+from n2v.nn.layers.concat2d import Concat2D as _Concat2D
+from n2v.nn.layers.selective_feature_fusion import SelectiveFeatureFusion as _SFF
+from n2v.nn.layers.mix_ffn import MixFFN as _MixFFN
+
 # ONNX types (onnx2torch is a required dependency)
 from onnx2torch.node_converters.global_average_pool import (
     OnnxGlobalAveragePool,
@@ -248,6 +269,18 @@ def _reach_layer_star(layer: nn.Module, input_sets: List, method: str, **kwargs)
     elif isinstance(layer, _GRN):
         return grn_reach.grn_star_approx(layer, input_sets)
 
+    # ----- Phase 2: elementwise-affine MLP/skip ops -----
+    elif isinstance(layer, _LayerScale):
+        return layerscale_reach.layerscale_star(layer, input_sets)
+    elif isinstance(layer, _DropPath):
+        return drop_path_reach.drop_path_star(layer, input_sets)
+    elif isinstance(layer, _AddWithFrozenSkip):
+        return add_with_frozen_skip_reach.add_with_frozen_skip_star(layer, input_sets)
+    elif isinstance(layer, _ConcatWithFrozenSkip):
+        return concat_with_frozen_skip_reach.concat_with_frozen_skip_star(layer, input_sets)
+    elif isinstance(layer, _MixFFN):
+        return mix_ffn_reach.mix_ffn_passthrough(layer, input_sets, method, **kwargs)
+
     elif isinstance(layer, (nn.Identity, nn.Dropout, nn.Dropout2d, nn.Dropout3d)):
         return input_sets
 
@@ -323,6 +356,16 @@ def _reach_layer_zono(layer: nn.Module, input_sets: List, method: str, **kwargs)
 
     elif _is_sign_layer(layer):
         return sign_reach.sign_zono(input_sets)
+
+    # ----- Phase 2: elementwise-affine MLP/skip ops -----
+    elif isinstance(layer, _LayerScale):
+        return layerscale_reach.layerscale_zono(layer, input_sets)
+    elif isinstance(layer, _DropPath):
+        return drop_path_reach.drop_path_zono(layer, input_sets)
+    elif isinstance(layer, _AddWithFrozenSkip):
+        return add_with_frozen_skip_reach.add_with_frozen_skip_zono(layer, input_sets)
+    elif isinstance(layer, _ConcatWithFrozenSkip):
+        return concat_with_frozen_skip_reach.concat_with_frozen_skip_zono(layer, input_sets)
 
     elif isinstance(layer, (nn.Identity, nn.Dropout, nn.Dropout2d, nn.Dropout3d)):
         return input_sets
@@ -402,6 +445,28 @@ def _reach_layer_box(layer: nn.Module, input_sets: List, method: str, **kwargs) 
         return groupnorm_reach.groupnorm_box(layer, input_sets)
     elif isinstance(layer, _GRN):
         return grn_reach.grn_box(layer, input_sets)
+
+    # ----- Phase 2: skip / MLP / DAG -----
+    elif isinstance(layer, _LayerScale):
+        return layerscale_reach.layerscale_box(layer, input_sets)
+    elif isinstance(layer, _DropPath):
+        return drop_path_reach.drop_path_box(layer, input_sets)
+    elif isinstance(layer, _AddWithFrozenSkip):
+        return add_with_frozen_skip_reach.add_with_frozen_skip_box(layer, input_sets)
+    elif isinstance(layer, _ConcatWithFrozenSkip):
+        return concat_with_frozen_skip_reach.concat_with_frozen_skip_box(layer, input_sets)
+    elif isinstance(layer, (_DagAdd, _DagConcat, _Concat2D, _SFF)):
+        # Multi-input ops: dispatcher's single-input path can't satisfy
+        # them. The graph-level traversal in n2v.nn.reach handles their
+        # multi-port inputs by calling the per-op helpers in
+        # dag_add_reach / dag_concat_reach / concat2d_reach /
+        # selective_feature_fusion_reach with the second-port stream in
+        # ``extras``. Raising here keeps single-input dispatch sound.
+        raise NotImplementedError(
+            f"{type(layer).__name__} requires multi-input dispatch via n2v.nn.reach."
+        )
+    elif isinstance(layer, _MixFFN):
+        return mix_ffn_reach.mix_ffn_passthrough(layer, input_sets, method, **kwargs)
 
     elif isinstance(layer, (nn.Identity, nn.Dropout, nn.Dropout2d, nn.Dropout3d)):
         return input_sets
