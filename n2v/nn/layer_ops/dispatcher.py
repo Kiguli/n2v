@@ -67,6 +67,24 @@ from n2v.nn.layers.concat2d import Concat2D as _Concat2D
 from n2v.nn.layers.selective_feature_fusion import SelectiveFeatureFusion as _SFF
 from n2v.nn.layers.mix_ffn import MixFFN as _MixFFN
 
+# Phase 3 ports: attention layers
+from . import softmax_attention_reach
+from . import causal_mask_reach
+from . import sparsemax_reach
+from . import relative_attention_bias_t5_reach
+from . import relative_position_bias_table_reach
+from . import linear_attention_reach
+from . import efficient_attention_sr_reach
+from . import sparse_attention_reach
+from . import cross_attention_reach
+from . import grouped_query_attention_reach
+from . import multi_query_attention_reach
+
+from n2v.nn.layers.softmax_attention import SoftmaxAttention as _SoftmaxAttention
+from n2v.nn.layers.causal_mask import CausalMask as _CausalMask
+from n2v.nn.layers.relative_attention_bias_t5 import RelativeAttentionBiasT5 as _RelAttnBiasT5
+from n2v.nn.layers.relative_position_bias_table import RelativePositionBiasTable as _RelPosBiasTable
+
 # ONNX types (onnx2torch is a required dependency)
 from onnx2torch.node_converters.global_average_pool import (
     OnnxGlobalAveragePool,
@@ -281,6 +299,16 @@ def _reach_layer_star(layer: nn.Module, input_sets: List, method: str, **kwargs)
     elif isinstance(layer, _MixFFN):
         return mix_ffn_reach.mix_ffn_passthrough(layer, input_sets, method, **kwargs)
 
+    # ----- Phase 3: single-input attention helpers -----
+    elif isinstance(layer, _CausalMask):
+        return causal_mask_reach.causal_mask_star(layer, input_sets)
+    elif isinstance(layer, (_RelAttnBiasT5, _RelPosBiasTable)):
+        return relative_attention_bias_t5_reach.relative_attention_bias_t5_star(layer, input_sets)
+    elif isinstance(layer, _SoftmaxAttention):
+        raise NotImplementedError(
+            "SoftmaxAttention requires multi-input (Q, K, V) dispatch via n2v.nn.reach."
+        )
+
     elif isinstance(layer, (nn.Identity, nn.Dropout, nn.Dropout2d, nn.Dropout3d)):
         return input_sets
 
@@ -366,6 +394,12 @@ def _reach_layer_zono(layer: nn.Module, input_sets: List, method: str, **kwargs)
         return add_with_frozen_skip_reach.add_with_frozen_skip_zono(layer, input_sets)
     elif isinstance(layer, _ConcatWithFrozenSkip):
         return concat_with_frozen_skip_reach.concat_with_frozen_skip_zono(layer, input_sets)
+
+    # ----- Phase 3: single-input attention helpers (zono coverage limited) -----
+    elif isinstance(layer, _CausalMask):
+        return causal_mask_reach.causal_mask_zono(layer, input_sets)
+    elif isinstance(layer, (_RelAttnBiasT5, _RelPosBiasTable)):
+        return relative_attention_bias_t5_reach.relative_attention_bias_t5_zono(layer, input_sets)
 
     elif isinstance(layer, (nn.Identity, nn.Dropout, nn.Dropout2d, nn.Dropout3d)):
         return input_sets
@@ -467,6 +501,16 @@ def _reach_layer_box(layer: nn.Module, input_sets: List, method: str, **kwargs) 
         )
     elif isinstance(layer, _MixFFN):
         return mix_ffn_reach.mix_ffn_passthrough(layer, input_sets, method, **kwargs)
+
+    # ----- Phase 3: single-input attention helpers -----
+    elif isinstance(layer, _CausalMask):
+        return causal_mask_reach.causal_mask_box(layer, input_sets)
+    elif isinstance(layer, (_RelAttnBiasT5, _RelPosBiasTable)):
+        return relative_attention_bias_t5_reach.relative_attention_bias_t5_box(layer, input_sets)
+    elif isinstance(layer, _SoftmaxAttention):
+        raise NotImplementedError(
+            "SoftmaxAttention requires multi-input (Q, K, V) dispatch via n2v.nn.reach."
+        )
 
     elif isinstance(layer, (nn.Identity, nn.Dropout, nn.Dropout2d, nn.Dropout3d)):
         return input_sets
