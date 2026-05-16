@@ -24,12 +24,13 @@ n2v: Neural Network Verification Toolbox
       Star, Zonotope, Box, Hexatope, Octatope --
       propagate sets through neural networks with formal guarantees.
 
-   .. grid-item-card:: 20+ Layer Types
+   .. grid-item-card:: 65+ Layer Types
       :class-card: sd-border-0 sd-shadow-sm
       :text-align: center
 
-      ReLU, Conv2D, MaxPool2D, Sigmoid, Tanh, BatchNorm,
-      and more -- with exact and approximate methods.
+      ReLU/GELU/SiLU/HardSwish, Conv2D, Conv2DTranspose, MaxPool2D,
+      LayerNorm/RMSNorm/GroupNorm, SoftmaxAttention, RoPE, PatchEmbed,
+      and many more — exact and approximate methods.
 
    .. grid-item-card:: Probabilistic Verification
       :class-card: sd-border-0 sd-shadow-sm

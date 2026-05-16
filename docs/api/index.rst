@@ -26,11 +26,18 @@ API Reference
       ``NeuralNetwork`` class for reachability analysis
 
    .. grid-item-card:: Layer Operations
-      :link: layer-ops
+      :link: layer-ops/index
       :link-type: doc
       :class-card: sd-border-0 sd-shadow-sm
 
       Layer-level reachability dispatch and operations
+
+   .. grid-item-card:: Layer Wrappers
+      :link: layers
+      :link-type: doc
+      :class-card: sd-border-0 sd-shadow-sm
+
+      ``n2v.nn.layers`` — wrapper modules for ops not in ``torch.nn``
 
    .. grid-item-card:: Probabilistic
       :link: probabilistic
@@ -59,7 +66,8 @@ API Reference
 
    sets
    neural-network
-   layer-ops
+   layer-ops/index
+   layers
    probabilistic
    utils
    config
