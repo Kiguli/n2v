@@ -98,6 +98,24 @@ from n2v.nn.layers.distillation_token import DistillationToken as _DistillationT
 from n2v.nn.layers.positional_encoding import PositionalEncoding as _PositionalEncoding
 from n2v.nn.layers.rope import RoPE as _RoPE
 
+# Phase 5 ports: conv variants & specialty
+from . import tied_linear_reach
+from . import conv2d_transpose_reach
+from . import depthwise_conv_reach
+from . import action_head_reach
+from . import action_tokenizer_reach
+from . import openmax_reach
+from . import pooler_reach
+from . import projection_head_reach
+from . import conv_token_embedding_reach
+
+from n2v.nn.layers.tied_linear import TiedLinear as _TiedLinear
+from n2v.nn.layers.action_head import ActionHead as _ActionHead
+from n2v.nn.layers.action_tokenizer import ActionTokenizer as _ActionTokenizer
+from n2v.nn.layers.openmax import OpenMax as _OpenMax
+from n2v.nn.layers.pooler import Pooler as _Pooler
+from n2v.nn.layers.projection_head import ProjectionHead as _ProjectionHead
+
 # ONNX types (onnx2torch is a required dependency)
 from onnx2torch.node_converters.global_average_pool import (
     OnnxGlobalAveragePool,
@@ -334,6 +352,22 @@ def _reach_layer_star(layer: nn.Module, input_sets: List, method: str, **kwargs)
     elif isinstance(layer, _DistillationToken):
         return distillation_token_reach.distillation_token_star(layer, input_sets)
 
+    # ----- Phase 5: conv variants & specialty -----
+    elif isinstance(layer, _TiedLinear):
+        return tied_linear_reach.tied_linear_star(layer, input_sets)
+    elif isinstance(layer, nn.ConvTranspose2d):
+        return conv2d_transpose_reach.conv2d_transpose_star(layer, input_sets)
+    elif isinstance(layer, _ActionHead):
+        return action_head_reach.action_head_star(layer, input_sets)
+    elif isinstance(layer, _ActionTokenizer):
+        return action_tokenizer_reach.action_tokenizer_star_approx(layer, input_sets)
+    elif isinstance(layer, _OpenMax):
+        return openmax_reach.openmax_star_approx(layer, input_sets)
+    elif isinstance(layer, _Pooler):
+        return pooler_reach.pooler_passthrough(layer, input_sets, method, **kwargs)
+    elif isinstance(layer, _ProjectionHead):
+        return projection_head_reach.projection_head_passthrough(layer, input_sets, method, **kwargs)
+
     elif isinstance(layer, (nn.Identity, nn.Dropout, nn.Dropout2d, nn.Dropout3d)):
         return input_sets
 
@@ -437,6 +471,18 @@ def _reach_layer_zono(layer: nn.Module, input_sets: List, method: str, **kwargs)
         return cls_token_reach.cls_token_zono(layer, input_sets)
     elif isinstance(layer, _DistillationToken):
         return distillation_token_reach.distillation_token_zono(layer, input_sets)
+
+    # ----- Phase 5: conv variants & specialty -----
+    elif isinstance(layer, _TiedLinear):
+        return tied_linear_reach.tied_linear_zono(layer, input_sets)
+    elif isinstance(layer, nn.ConvTranspose2d):
+        return conv2d_transpose_reach.conv2d_transpose_zono(layer, input_sets)
+    elif isinstance(layer, _ActionHead):
+        return action_head_reach.action_head_zono(layer, input_sets)
+    elif isinstance(layer, _Pooler):
+        return pooler_reach.pooler_passthrough(layer, input_sets, method, **kwargs)
+    elif isinstance(layer, _ProjectionHead):
+        return projection_head_reach.projection_head_passthrough(layer, input_sets, method, **kwargs)
 
     elif isinstance(layer, (nn.Identity, nn.Dropout, nn.Dropout2d, nn.Dropout3d)):
         return input_sets
@@ -561,6 +607,22 @@ def _reach_layer_box(layer: nn.Module, input_sets: List, method: str, **kwargs) 
     elif isinstance(layer, _DistillationToken):
         return distillation_token_reach.distillation_token_box(layer, input_sets)
 
+    # ----- Phase 5: conv variants & specialty -----
+    elif isinstance(layer, _TiedLinear):
+        return tied_linear_reach.tied_linear_box(layer, input_sets)
+    elif isinstance(layer, nn.ConvTranspose2d):
+        return conv2d_transpose_reach.conv2d_transpose_box(layer, input_sets)
+    elif isinstance(layer, _ActionHead):
+        return action_head_reach.action_head_box(layer, input_sets)
+    elif isinstance(layer, _ActionTokenizer):
+        return action_tokenizer_reach.action_tokenizer_box(layer, input_sets)
+    elif isinstance(layer, _OpenMax):
+        return openmax_reach.openmax_box(layer, input_sets)
+    elif isinstance(layer, _Pooler):
+        return pooler_reach.pooler_passthrough(layer, input_sets, method, **kwargs)
+    elif isinstance(layer, _ProjectionHead):
+        return projection_head_reach.projection_head_passthrough(layer, input_sets, method, **kwargs)
+
     elif isinstance(layer, (nn.Identity, nn.Dropout, nn.Dropout2d, nn.Dropout3d)):
         return input_sets
 
@@ -604,6 +666,11 @@ def _reach_layer_hexatope(layer: nn.Module, input_sets: List, method: str, **kwa
     elif isinstance(layer, _ONNX_CAST_TYPES):
         return input_sets
 
+    elif isinstance(layer, _TiedLinear):
+        return tied_linear_reach.tied_linear_hexatope(layer, input_sets)
+    elif isinstance(layer, _ActionHead):
+        return action_head_reach.action_head_hexatope(layer, input_sets)
+
     elif isinstance(layer, (nn.Identity, nn.Dropout, nn.Dropout2d, nn.Dropout3d)):
         return input_sets
 
@@ -646,6 +713,11 @@ def _reach_layer_octatope(layer: nn.Module, input_sets: List, method: str, **kwa
 
     elif isinstance(layer, _ONNX_CAST_TYPES):
         return input_sets
+
+    elif isinstance(layer, _TiedLinear):
+        return tied_linear_reach.tied_linear_octatope(layer, input_sets)
+    elif isinstance(layer, _ActionHead):
+        return action_head_reach.action_head_octatope(layer, input_sets)
 
     elif isinstance(layer, (nn.Identity, nn.Dropout, nn.Dropout2d, nn.Dropout3d)):
         return input_sets
