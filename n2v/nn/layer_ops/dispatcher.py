@@ -30,6 +30,22 @@ from . import conv1d_reach
 from . import upsample_reach
 from . import sign_reach
 
+# Phase 1 ports: activations and normalisations from nnVLA
+from . import relu6_reach
+from . import elu_reach
+from . import gelu_reach
+from . import quickgelu_reach
+from . import silu_reach
+from . import hardswish_reach
+from . import layernorm_reach
+from . import rmsnorm_reach
+from . import groupnorm_reach
+from . import grn_reach
+
+# Wrapper modules detected via isinstance (introduced in Phase 1.5)
+from n2v.nn.layers.rms_norm import RMSNorm as _RMSNorm
+from n2v.nn.layers.grn import GRN as _GRN
+
 # ONNX types (onnx2torch is a required dependency)
 from onnx2torch.node_converters.global_average_pool import (
     OnnxGlobalAveragePool,
@@ -210,6 +226,28 @@ def _reach_layer_star(layer: nn.Module, input_sets: List, method: str, **kwargs)
     elif _is_sign_layer(layer):
         return sign_reach.sign_star(layer, input_sets, method, **kwargs)
 
+    # ----- Phase 1: activations -----
+    elif isinstance(layer, nn.ReLU6):
+        return relu6_reach.relu6_star_approx(input_sets)
+    elif isinstance(layer, nn.ELU):
+        return elu_reach.elu_star_approx(input_sets, alpha=float(layer.alpha))
+    elif isinstance(layer, nn.GELU):
+        return gelu_reach.gelu_star_approx(input_sets)
+    elif isinstance(layer, nn.SiLU):
+        return silu_reach.silu_star_approx(input_sets)
+    elif isinstance(layer, nn.Hardswish):
+        return hardswish_reach.hardswish_star_approx(input_sets)
+
+    # ----- Phase 1: normalisations -----
+    elif isinstance(layer, _RMSNorm):
+        return rmsnorm_reach.rmsnorm_star_approx(layer, input_sets)
+    elif isinstance(layer, nn.LayerNorm):
+        return layernorm_reach.layernorm_star_approx(layer, input_sets)
+    elif isinstance(layer, nn.GroupNorm):
+        return groupnorm_reach.groupnorm_star_approx(layer, input_sets)
+    elif isinstance(layer, _GRN):
+        return grn_reach.grn_star_approx(layer, input_sets)
+
     elif isinstance(layer, (nn.Identity, nn.Dropout, nn.Dropout2d, nn.Dropout3d)):
         return input_sets
 
@@ -342,6 +380,28 @@ def _reach_layer_box(layer: nn.Module, input_sets: List, method: str, **kwargs) 
 
     elif _is_sign_layer(layer):
         return sign_reach.sign_box(input_sets)
+
+    # ----- Phase 1: activations -----
+    elif isinstance(layer, nn.ReLU6):
+        return relu6_reach.relu6_box(input_sets)
+    elif isinstance(layer, nn.ELU):
+        return elu_reach.elu_box(input_sets, alpha=float(layer.alpha))
+    elif isinstance(layer, nn.GELU):
+        return gelu_reach.gelu_box(input_sets)
+    elif isinstance(layer, nn.SiLU):
+        return silu_reach.silu_box(input_sets)
+    elif isinstance(layer, nn.Hardswish):
+        return hardswish_reach.hardswish_box(input_sets)
+
+    # ----- Phase 1: normalisations -----
+    elif isinstance(layer, _RMSNorm):
+        return rmsnorm_reach.rmsnorm_box(layer, input_sets)
+    elif isinstance(layer, nn.LayerNorm):
+        return layernorm_reach.layernorm_box(layer, input_sets)
+    elif isinstance(layer, nn.GroupNorm):
+        return groupnorm_reach.groupnorm_box(layer, input_sets)
+    elif isinstance(layer, _GRN):
+        return grn_reach.grn_box(layer, input_sets)
 
     elif isinstance(layer, (nn.Identity, nn.Dropout, nn.Dropout2d, nn.Dropout3d)):
         return input_sets
