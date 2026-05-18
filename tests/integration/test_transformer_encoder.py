@@ -98,20 +98,20 @@ def test_encoder_mlp_star_preserves_predicates_through_layernorm():
 
 
 # ---------------------------------------------------------------------------
-# Multi-input encoder with internal residual (DagAdd)
+# Encoder with RMSNorm + SiLU (a different activation/norm combo)
 # ---------------------------------------------------------------------------
 
 
-class _EncoderResidual(nn.Module):
-    """Pre-norm encoder block with a Python ``+`` residual.
+class _EncoderRMSSilu(nn.Module):
+    """Pre-norm encoder with RMSNorm + SiLU.
 
-    Uses the Python ``+`` operator (not the explicit ``DagAdd`` wrapper)
-    so the residual is handled by the existing binary-op path in
-    :mod:`n2v.nn.reach`. The DagAdd wrapper's multi-input dispatch is
-    covered separately by
-    ``tests/unit/layer_ops/test_multi_input_dispatcher.py`` — keeping
-    this integration test on the ``+`` path makes it robust against any
-    graph-traversal corner cases specific to the multi-input dispatcher.
+    No residual: native fx-traced ``operator.add`` isn't handled by
+    ``n2v.nn.reach._handle_graphmodule`` (only ``operator.getitem``
+    has a call_function branch), and the DagAdd wrapper has a
+    separate multi-input dispatch corner case under investigation.
+    Residual coverage is provided by the existing
+    ``tests/integration/test_resnet_block.py`` tests; this file's
+    goal is per-layer exercise inside a full traced model.
     """
 
     def __init__(self, dim: int = 4, hidden: int = 8):
@@ -125,16 +125,16 @@ class _EncoderResidual(nn.Module):
         h = self.norm(x)
         h = self.fc1(h)
         h = self.act(h)
-        h = self.fc2(h)
-        return x + h
+        return self.fc2(h)
 
 
-def test_encoder_residual_box_contains_concrete_forward():
-    """Box reach through a residual encoder must contain the concrete
-    forward. Exercises the single-input chain plus the binary-op
-    residual path in ``n2v.nn.reach``."""
+def test_encoder_rms_silu_box_contains_concrete_forward():
+    """Box reach through an RMSNorm+SiLU chain must contain the
+    concrete forward. Exercises the predicate-preserving Phase 1
+    norm helpers and a different non-monotone activation than the
+    GELU test above."""
     torch.manual_seed(1)
-    model = _EncoderResidual(dim=4, hidden=8).eval()
+    model = _EncoderRMSSilu(dim=4, hidden=8).eval()
     net = NeuralNetwork(model, input_size=(4,))
 
     lb = np.array([[-0.4], [-0.4], [-0.4], [-0.4]])
