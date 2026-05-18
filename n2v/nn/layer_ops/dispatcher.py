@@ -16,6 +16,10 @@ from n2v.sets import Star, Zono, Box, Hexatope, Octatope
 from n2v.sets.image_star import ImageStar
 from n2v.sets.image_zono import ImageZono
 
+# Registry consulted as a fallback when no isinstance branch matches.
+# New layers can self-register via @n2v.nn.layer_ops.register(Layer, SetCls).
+from n2v.nn.layer_ops.registry import lookup as _registry_lookup
+
 # Import layer-specific reach functions
 from . import linear_reach, relu_reach, conv2d_reach, flatten_reach
 from . import maxpool2d_reach, avgpool2d_reach, global_avgpool_reach
@@ -379,6 +383,9 @@ def _reach_layer_star(layer: nn.Module, input_sets: List, method: str, **kwargs)
         return current_sets
 
     else:
+        handler = _registry_lookup(layer, Star)
+        if handler is not None:
+            return handler(layer, input_sets, method, **kwargs)
         raise NotImplementedError(
             f"Star reachability not implemented for layer type: {type(layer).__name__}"
         )
@@ -494,6 +501,9 @@ def _reach_layer_zono(layer: nn.Module, input_sets: List, method: str, **kwargs)
         return current_sets
 
     else:
+        handler = _registry_lookup(layer, Zono)
+        if handler is not None:
+            return handler(layer, input_sets, method, **kwargs)
         raise NotImplementedError(
             f"Zono reachability not implemented for layer type: {type(layer).__name__}"
         )
@@ -633,6 +643,9 @@ def _reach_layer_box(layer: nn.Module, input_sets: List, method: str, **kwargs) 
         return current_sets
 
     else:
+        handler = _registry_lookup(layer, Box)
+        if handler is not None:
+            return handler(layer, input_sets, method, **kwargs)
         raise NotImplementedError(
             f"Box reachability not implemented for layer type: {type(layer).__name__}"
         )
@@ -693,6 +706,9 @@ def _reach_layer_hexatope(layer: nn.Module, input_sets: List, method: str, **kwa
         return current_sets
 
     else:
+        handler = _registry_lookup(layer, Hexatope)
+        if handler is not None:
+            return handler(layer, input_sets, method, **kwargs)
         raise NotImplementedError(
             f"Hexatope reachability not implemented for layer type: {type(layer).__name__}"
         )
@@ -753,6 +769,9 @@ def _reach_layer_octatope(layer: nn.Module, input_sets: List, method: str, **kwa
         return current_sets
 
     else:
+        handler = _registry_lookup(layer, Octatope)
+        if handler is not None:
+            return handler(layer, input_sets, method, **kwargs)
         raise NotImplementedError(
             f"Octatope reachability not implemented for layer type: {type(layer).__name__}"
         )
