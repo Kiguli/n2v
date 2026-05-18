@@ -16,8 +16,14 @@ import numpy as np
 import torch.nn as nn
 
 from n2v.sets import Box, Star
+from n2v.sets.image_star import ImageStar
 from n2v.nn.layer_ops._image_shape import apply_box_lift_star
-from n2v.nn.layer_ops._norm_utils import affine_after_norm, normalised_interval
+from n2v.nn.layer_ops._layernorm_star import predicate_preserving_norm_star
+from n2v.nn.layer_ops._norm_utils import (
+    affine_after_norm,
+    interval_mean_var,
+    normalised_interval,
+)
 
 
 def _gn_params(layer: nn.GroupNorm):
@@ -78,7 +84,15 @@ def groupnorm_box(layer: nn.GroupNorm, input_boxes: List[Box]) -> List[Box]:
 
 
 def groupnorm_star_approx(layer: nn.GroupNorm, input_stars: List[Star]) -> List[Star]:
+    """Predicate-preserving Star reach for GroupNorm.
+
+    GroupNorm applies LayerNorm independently within each channel group.
+    We carry the input predicates through each per-group affine map and
+    add per-feature slack predicates for the per-group scale intervals.
+    Falls back to box-lift when the input has no predicate basis.
+    """
     num_groups, num_channels, weight, bias, eps = _gn_params(layer)
+    channels_per_group = num_channels // num_groups
 
     def _box(lb, ub):
         norm_lb, norm_ub = _groupnorm_interval(lb, ub, num_groups, num_channels, eps)
@@ -89,4 +103,42 @@ def groupnorm_star_approx(layer: nn.GroupNorm, input_stars: List[Star]) -> List[
             norm_lb, norm_ub = affine_after_norm(norm_lb, norm_ub, w_b, b_b)
         return norm_lb, norm_ub
 
-    return apply_box_lift_star(input_stars, _box)
+    output: List[Star] = []
+    for s in input_stars:
+        is_image = isinstance(s, ImageStar)
+        base = s.to_star() if is_image else s
+        if base.V is None or base.V.size == 0 or base.dim % num_channels != 0:
+            # Box-lift fallback when predicates are absent or shape unknown.
+            new_star = apply_box_lift_star([base], _box)[0]
+        else:
+            # Bound each group's scale (1/sigma) interval using IBP, then
+            # build a Star that preserves the input predicates per group.
+            lb, ub = base.estimate_ranges()
+            spatial = base.dim // num_channels
+            lb_c = lb.reshape(num_channels, spatial)
+            ub_c = ub.reshape(num_channels, spatial)
+            # Worst-case sigma across all groups (conservative single bound).
+            sig_lb_list, sig_ub_list = [], []
+            for g in range(num_groups):
+                start = g * channels_per_group
+                end = start + channels_per_group
+                g_lb = lb_c[start:end].reshape(-1)
+                g_ub = ub_c[start:end].reshape(-1)
+                _, _, var_lb, var_ub = interval_mean_var(g_lb, g_ub)
+                sig_lb_list.append(float(np.sqrt(float(var_lb) + eps)))
+                sig_ub_list.append(float(np.sqrt(float(var_ub) + eps)))
+            sigma_lb = min(sig_lb_list)
+            sigma_ub = max(sig_ub_list)
+            weight_b = np.repeat(weight, spatial) if weight is not None else None
+            bias_b = np.repeat(bias, spatial) if bias is not None else None
+            new_star = predicate_preserving_norm_star(
+                base,
+                sigma_bounds=(sigma_lb, sigma_ub),
+                weight=weight_b,
+                bias=bias_b,
+                subtract_mean=True,
+            )
+        if is_image:
+            new_star = new_star.to_image_star(s.height, s.width, s.num_channels)
+        output.append(new_star)
+    return output
