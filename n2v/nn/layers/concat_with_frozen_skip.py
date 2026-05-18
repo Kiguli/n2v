@@ -14,6 +14,13 @@ class ConcatWithFrozenSkip(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         skip = self.skip
-        if skip.shape[0] != x.shape[0]:
+        # Broadcast a feature-shaped skip (e.g. shape (D,) or (1, D)) up to
+        # x's batch dimension. For an unmatched leading dim we unsqueeze
+        # and expand rather than naively assuming skip.shape[0] is batch.
+        if skip.ndim < x.ndim:
+            skip = skip.unsqueeze(0)
+            skip = skip.expand(x.shape[0], *skip.shape[1:])
+        elif skip.shape[0] != x.shape[0]:
+            # Same rank but mismatched batch — broadcast across batch.
             skip = skip.expand(x.shape[0], *skip.shape[1:])
         return torch.cat([x, skip], dim=self.dim)

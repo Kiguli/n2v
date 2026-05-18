@@ -1,10 +1,17 @@
-"""EfficientAttentionSR reachability (Spatial Reduction Attention).
+"""EfficientAttentionSR reachability — explicitly *not* implemented.
 
-SRA reduces the K/V sequence length via a strided convolution, then
-applies softmax attention to the reduced representation. For
-reachability the SR part is a Conv2d (handled by conv2d_reach) and the
-attention part by softmax_attention_reach; this module is a thin
-wrapper that recursively dispatches its sub-modules.
+EfficientAttentionSR (Spatial-Reduction Attention) branches Q/K/V from
+the same input and reduces K/V via a strided convolution before
+applying softmax attention. Verifying it correctly requires the same
+multi-port handling as :class:`SoftmaxAttention` plus the SR
+convolution applied only to the K/V branches.
+
+The previous passthrough composed ``sr → proj_q → proj_k → proj_v →
+attention → proj_out`` *serially* on the same input set, which
+verifies a fundamentally different network. To avoid silent
+unsoundness this helper now raises; users should construct the model
+from the underlying primitives (Conv2d + Linear + SoftmaxAttention)
+so the multi-input dispatcher can handle the QKV branching correctly.
 """
 
 from __future__ import annotations
@@ -12,11 +19,12 @@ from __future__ import annotations
 from typing import List
 
 
-def efficient_attention_sr_passthrough(layer, input_sets: List, method: str = "exact", **kwargs):
-    from n2v.nn.layer_ops.dispatcher import reach_layer
-    current = input_sets
-    for sub_name in ("sr", "proj_q", "proj_k", "proj_v", "attention", "proj_out"):
-        sub = getattr(layer, sub_name, None)
-        if sub is not None:
-            current = reach_layer(sub, current, method, **kwargs)
-    return current
+def efficient_attention_sr_passthrough(
+    layer, input_sets: List, method: str = "exact", **kwargs
+):
+    raise NotImplementedError(
+        "EfficientAttentionSR reach is not implemented: serial sub-module "
+        "dispatch (sr → q → k → v → attention) silently verifies a "
+        "different network. Decompose the model into Conv2d + Linear + "
+        "SoftmaxAttention primitives and use the multi-input dispatcher."
+    )

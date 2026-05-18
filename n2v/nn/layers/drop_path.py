@@ -13,7 +13,14 @@ class DropPath(nn.Module):
 
     def __init__(self, drop_prob: float = 0.0):
         super().__init__()
-        self.drop_prob = float(drop_prob)
+        p = float(drop_prob)
+        if not (0.0 <= p < 1.0):
+            raise ValueError(
+                f"DropPath drop_prob must be in [0, 1), got {p}. Values "
+                f">= 1 would zero out every sample (keep_prob == 0 causes "
+                f"division by zero in forward)."
+            )
+        self.drop_prob = p
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if self.drop_prob == 0.0 or not self.training:

@@ -1,10 +1,16 @@
-"""MixFFN reachability.
+"""MixFFN reachability — explicitly *not* implemented as a passthrough.
 
-n2v relies on torch.fx to decompose MixFFN into its primitives
-(``Linear -> Conv2d -> GELU -> Linear``). This module exists only to
-provide a recursive fallback when an explicit ``MixFFN`` module appears
-as an opaque node in the trace; in that case we walk its sub-modules
-manually using the dispatcher.
+``MixFFN.forward`` performs a sequence-to-image reshape/transpose
+before the depthwise Conv2d and the inverse afterward. A naive serial
+sub-module pass ``fc1 → dwconv → act → fc2`` omits those reshapes and
+either passes wrong-shaped sets into ``Conv2d`` or verifies a
+different operation entirely.
+
+n2v relies on torch.fx tracing to decompose MixFFN into its primitives
+(``Linear`` + reshape + ``Conv2d`` + ``GELU`` + reshape + ``Linear``),
+which gives each step a correctly-shaped input set. If the fx tracer
+ever passes an opaque ``MixFFN`` module to the dispatcher, this helper
+now raises so the unsoundness is loud rather than silent.
 """
 
 from __future__ import annotations
@@ -13,15 +19,10 @@ from typing import List
 
 
 def mix_ffn_passthrough(layer, input_sets: List, method: str = "exact", **kwargs):
-    """Recurse through MixFFN's sub-modules using the dispatcher.
-
-    Imports ``reach_layer`` lazily — ``dispatcher.py`` imports
-    ``mix_ffn_reach`` at module load, so importing ``reach_layer`` at
-    file load would create a circular import.
-    """
-    from n2v.nn.layer_ops.dispatcher import reach_layer  # local import
-
-    current = input_sets
-    for sub in [layer.fc1, layer.dwconv, layer.act, layer.fc2]:
-        current = reach_layer(sub, current, method, **kwargs)
-    return current
+    raise NotImplementedError(
+        "MixFFN reach is not implemented as a passthrough: the inner "
+        "sequence-to-image reshape between Linear and Conv2d would be "
+        "lost, silently changing the verified operation. Rely on "
+        "torch.fx to decompose MixFFN into primitives, or split the "
+        "block manually in your model definition."
+    )

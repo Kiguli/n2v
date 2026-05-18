@@ -1,11 +1,23 @@
-"""Distillation token (DeiT): a second learnable token concatenated after CLS."""
+"""Distillation token (DeiT): a learnable token prepended to a sequence.
+
+Despite the DeiT paper presenting the distillation token as appearing
+*after* CLS in the final token order, this wrapper simply prepends a
+learnable token at the start of the sequence. To replicate the
+[CLS, distillation, patch_1, ..., patch_N] ordering, apply
+``DistillationToken`` *first* on the patch sequence, then ``CLSToken``
+on the result.
+"""
 
 import torch
 import torch.nn as nn
 
 
 class DistillationToken(nn.Module):
-    """Prepend a learnable distillation token to an ``(B, L, D)`` sequence."""
+    """Prepend a learnable distillation token to an ``(B, L, D)`` sequence.
+
+    See module docstring for token-ordering recipe when combining with
+    :class:`~n2v.nn.layers.CLSToken`.
+    """
 
     def __init__(self, dim: int):
         super().__init__()
