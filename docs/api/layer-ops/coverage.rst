@@ -132,3 +132,34 @@ The ⚠ entries are sound but use a box-lifted Star approximation. Each
 is tracked in the draft PR description with a pointer to the
 corresponding nnVLA ``methods/star.py`` implementation; tightening
 these is the main follow-up before the PR is marked ready for review.
+
+**Update (post-integration pass)**: ``LayerNorm`` and ``RMSNorm`` now
+ship a *predicate-preserving* Star reach that subtracts the input mean
+exactly and adds a per-feature slack predicate for the scale interval
+(see :mod:`n2v.nn.layer_ops._layernorm_star`). The remaining ⚠ entries
+for ``GELU`` / ``QuickGELU`` / ``SiLU`` / ``HardSwish`` / ``GroupNorm``
+/ ``GRN`` / ``SoftmaxAttention`` / ``Sparsemax`` are still box-lifted.
+
+Probabilistic Verification Scope
+--------------------------------
+
+n2v's probabilistic verification path (``method='probabilistic'`` and
+``method='hybrid'`` on :class:`~n2v.nn.NeuralNetwork.reach`) uses
+:class:`~n2v.sets.ProbabilisticBox` together with conformal-inference
+surrogates in :mod:`n2v.probabilistic`. ProbabilisticBox is a special
+case: rather than dispatching to per-layer reach functions, the
+verifier evaluates a *surrogate* model on calibration samples, so a
+layer only needs to be forward-callable in PyTorch — its set
+reachability is bypassed entirely.
+
+**All layers ported in this work are forward-callable in PyTorch and
+therefore compatible with the probabilistic path.** No per-layer
+ProbabilisticBox reach functions are required (and none are
+implemented). If you build a transformer with the new layers and call
+``model.reach(input_set, method='probabilistic')``, you get conformal
+coverage guarantees on the output without any new code paths firing.
+
+For the **deterministic** ``method='exact'`` and ``method='approx'``
+paths the per-layer set support shown in the tables above governs
+behaviour, and ``NotImplementedError`` is raised for any unsupported
+(layer, set type) pair.
