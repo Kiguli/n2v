@@ -125,8 +125,8 @@ def groupnorm_star_approx(layer: nn.GroupNorm, input_stars: List[Star]) -> List[
                 g_lb = lb_c[start:end].reshape(-1)
                 g_ub = ub_c[start:end].reshape(-1)
                 _, _, var_lb, var_ub = interval_mean_var(g_lb, g_ub)
-                sig_lb_list.append(float(np.sqrt(float(var_lb) + eps)))
-                sig_ub_list.append(float(np.sqrt(float(var_ub) + eps)))
+                sig_lb_list.append(float(np.sqrt(np.asarray(var_lb).item() + eps)))
+                sig_ub_list.append(float(np.sqrt(np.asarray(var_ub).item() + eps)))
             sigma_lb = min(sig_lb_list)
             sigma_ub = max(sig_ub_list)
             weight_b = np.repeat(weight, spatial) if weight is not None else None

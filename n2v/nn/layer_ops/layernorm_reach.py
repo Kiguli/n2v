@@ -69,8 +69,8 @@ def layernorm_star_approx(layer: nn.LayerNorm, input_stars: List[Star]) -> List[
         else:
             lb, ub = base.estimate_ranges()
             _, _, var_lb, var_ub = interval_mean_var(lb, ub)
-            sigma_lb = float(np.sqrt(float(var_lb) + eps))
-            sigma_ub = float(np.sqrt(float(var_ub) + eps))
+            sigma_lb = float(np.sqrt(np.asarray(var_lb).item() + eps))
+            sigma_ub = float(np.sqrt(np.asarray(var_ub).item() + eps))
             new_star = predicate_preserving_norm_star(
                 base,
                 sigma_bounds=(sigma_lb, sigma_ub),

@@ -15,8 +15,12 @@ from n2v.sets import Box, Star
 from n2v.nn.layer_ops._image_shape import apply_box_lift_star
 
 
-_QGELU_X_MIN = -1.176                # numerically located global min
-_QGELU_F_MIN = -0.169                # QuickGELU(_QGELU_X_MIN)
+# QuickGELU(x) = x * sigmoid(1.702 * x). The global minimum is at the
+# unique negative root of d/dx (x * sigmoid(1.702 x)) = 0; numerically
+# x* ≈ -0.7517 with f* ≈ -0.1638. Use slightly conservative values so the
+# sound lower bound never underestimates the dip.
+_QGELU_X_MIN = -0.7517
+_QGELU_F_MIN = -0.1639
 
 
 def _quickgelu(x: np.ndarray) -> np.ndarray:

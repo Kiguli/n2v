@@ -57,11 +57,11 @@ def interval_mean_var(lb: np.ndarray, ub: np.ndarray) -> Tuple[np.ndarray, np.nd
 def normalised_interval(lb: np.ndarray, ub: np.ndarray, eps: float = 1e-5) -> Tuple[np.ndarray, np.ndarray]:
     """Sound interval over y = (x - mean(x)) / sqrt(var(x) + eps) on [lb, ub]."""
     mu_lb, mu_ub, var_lb, var_ub = interval_mean_var(lb, ub)
-    s_lb = 1.0 / np.sqrt(float(var_ub) + eps)
-    s_ub = 1.0 / np.sqrt(float(var_lb) + eps)
+    s_lb = 1.0 / float(np.sqrt(np.asarray(var_ub).item() + eps))
+    s_ub = 1.0 / float(np.sqrt(np.asarray(var_lb).item() + eps))
 
-    diff_lb = lb.reshape(-1) - mu_ub
-    diff_ub = ub.reshape(-1) - mu_lb
+    diff_lb = lb.reshape(-1) - float(np.asarray(mu_ub).item())
+    diff_ub = ub.reshape(-1) - float(np.asarray(mu_lb).item())
 
     # Product with positive-range scale: each entry's image is
     #   s * (x - mu) ∈ [min(s_lb, s_ub) * min(diff_lb, ...), ...]

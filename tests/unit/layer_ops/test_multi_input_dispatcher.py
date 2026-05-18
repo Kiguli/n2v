@@ -27,29 +27,23 @@ def _make_node_values(*streams: List) -> dict:
 
 
 def _make_fake_node(module_name: str, n_inputs: int) -> fx.Node:
-    """Construct a minimal fx.Node-like stub with positional args only."""
+    """Build a real fx.Node with ``n_inputs`` placeholder args.
 
-    class _StubNode:
-        def __init__(self, args: tuple, kwargs: dict, name: str):
-            self.args = args
-            self.kwargs = kwargs
-            self.name = name
+    The dispatcher only reads ``node.args`` / ``node.kwargs`` and does
+    ``isinstance(arg, fx.Node)`` checks, so the node op type is
+    irrelevant — but ``call_module`` requires the named module to exist
+    on the root, while ``call_function`` does not. We therefore build a
+    ``call_function`` node with ``operator.add`` as a placeholder target.
+    No GraphModule is needed since we only need the fx.Node.
+    """
+    import operator
 
-    class _ArgRef:
-        def __init__(self, name: str):
-            self.name = name
-
-    args = tuple(_ArgRef(f"arg{i}") for i in range(n_inputs))
-    # Patch isinstance check for fx.Node by monkey-patching:
-    # the dispatcher does `isinstance(arg, fx.Node)` so we need a real
-    # fx.Node-compatible stub. Use a tiny fx.Graph to materialise one.
     g = fx.Graph()
     placeholders = [g.placeholder(f"arg{i}") for i in range(n_inputs)]
-    g.create_node("call_module", module_name, tuple(placeholders), {}, name="op")
-    g.output(placeholders[0])
-    gm = fx.GraphModule(nn.Module(), g)
-    # Find our call_module node.
-    op_node = next(n for n in gm.graph.nodes if n.name == "op")
+    op_node = g.create_node(
+        "call_function", operator.add, tuple(placeholders), {}, name=module_name
+    )
+    g.output(op_node)
     return op_node
 
 
