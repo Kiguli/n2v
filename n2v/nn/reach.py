@@ -38,8 +38,30 @@ logger = logging.getLogger(__name__)
 FUNCTION_TO_MODULE_CLS: dict[type, type[nn.Module]] = {
     F.relu: nn.ReLU,
     torch.relu: nn.ReLU,
+    F.relu6: nn.ReLU6,
+    F.elu: nn.ELU,
+    F.gelu: nn.GELU,
+    F.silu: nn.SiLU,
+    F.hardswish: nn.Hardswish,
+    F.leaky_relu: nn.LeakyReLU,
     torch.sigmoid: nn.Sigmoid,
+    F.sigmoid: nn.Sigmoid,
     torch.tanh: nn.Tanh,
+    F.tanh: nn.Tanh,
+}
+
+
+def _scaled_dot_product_attention_module():
+    """Lazy-construct SoftmaxAttention to avoid an import cycle at module load."""
+    from n2v.nn.layers.softmax_attention import SoftmaxAttention
+    return SoftmaxAttention()
+
+
+# Functional ops that need a parameterless wrapper module produced lazily.
+# (Separate from FUNCTION_TO_MODULE_CLS because the value here is a factory,
+# not a class, to avoid eager imports of n2v.nn.layers at the top of reach.py.)
+FUNCTION_TO_MODULE_FACTORY: dict = {
+    F.scaled_dot_product_attention: _scaled_dot_product_attention_module,
 }
 
 
@@ -162,6 +184,9 @@ def _function_node_to_module(
     if fn in FUNCTION_TO_MODULE_CLS:
         return FUNCTION_TO_MODULE_CLS[fn]()
 
+    if fn in FUNCTION_TO_MODULE_FACTORY:
+        return FUNCTION_TO_MODULE_FACTORY[fn]()
+
     # Parameterized functions
     if fn is F.leaky_relu:
         slope = node.kwargs.get('negative_slope', 0.01)
@@ -169,6 +194,13 @@ def _function_node_to_module(
                 and not isinstance(node.args[1], fx.Node)):
             slope = node.args[1]
         return nn.LeakyReLU(negative_slope=slope)
+
+    if fn is F.elu:
+        alpha = node.kwargs.get('alpha', 1.0)
+        if (len(node.args) > 1
+                and not isinstance(node.args[1], fx.Node)):
+            alpha = node.args[1]
+        return nn.ELU(alpha=alpha)
 
     if fn is torch.flatten:
         start_dim = node.kwargs.get('start_dim', 1)
