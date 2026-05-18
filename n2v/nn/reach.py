@@ -539,10 +539,23 @@ def _handle_multi_input_op(
         if len(streams) < 3:
             return None  # Need Q, K, V.
         q_stream, k_stream, v_stream = streams[0], streams[1], streams[2]
-        # Heuristic: infer l_q and d_v from the V stream's first set.
+        # d_v / l_q inference: prefer the wrapper's d_head (set explicitly
+        # by the user for verifiable models); otherwise inspect the Q
+        # stream's per-set shape if it's an ImageStar; otherwise fail with
+        # a clear error rather than silently using d_v=1.
+        d_v = getattr(module, "d_head", None)
+        first_q = q_stream[0]
         first_v = v_stream[0]
         v_dim = first_v.dim if hasattr(first_v, "dim") else first_v.lb.size
-        d_v = int(getattr(module, "d_head", 0) or 0) or 1
+        if d_v is None and isinstance(first_q, ImageStar):
+            d_v = first_q.num_channels
+        if d_v is None:
+            raise ValueError(
+                "SoftmaxAttention requires d_head to be set on the wrapper "
+                "for reachability analysis (e.g. SoftmaxAttention(d_head=64)). "
+                "It cannot be inferred from a flat Star/Box input."
+            )
+        d_v = int(d_v)
         l_q = max(1, v_dim // d_v)
         if set_type is Box:
             return softmax_attention_reach.softmax_attention_box(
