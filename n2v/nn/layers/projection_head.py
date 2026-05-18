@@ -1,5 +1,9 @@
 """Projection head: Linear -> activation -> Linear (CLIP / DINO style)."""
 
+from __future__ import annotations
+
+from typing import Optional
+
 import torch
 import torch.nn as nn
 
@@ -12,7 +16,7 @@ class ProjectionHead(nn.Module):
         in_features: int,
         hidden_features: int,
         out_features: int,
-        activation: nn.Module | None = None,
+        activation: Optional[nn.Module] = None,
     ):
         super().__init__()
         self.in_features = int(in_features)

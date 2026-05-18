@@ -1,13 +1,22 @@
 """MixFFN (SegFormer): Linear -> 3x3 depthwise conv -> GELU -> Linear."""
 
+from __future__ import annotations
+
+from typing import Optional
+
 import torch
 import torch.nn as nn
 
 
 class MixFFN(nn.Module):
-    """SegFormer Mix-FFN block (channel-mixing + spatial mixing)."""
+    """SegFormer Mix-FFN block (channel-mixing + spatial mixing).
 
-    def __init__(self, dim: int, hidden_dim: int | None = None):
+    Forward expects an ``(B, L, D)`` sequence where ``L`` is a perfect
+    square so the intermediate ``(B, D, H, W)`` form can be constructed.
+    Non-square sequence lengths raise ``ValueError``.
+    """
+
+    def __init__(self, dim: int, hidden_dim: Optional[int] = None):
         super().__init__()
         self.dim = int(dim)
         self.hidden_dim = int(hidden_dim if hidden_dim is not None else 4 * dim)
@@ -17,11 +26,15 @@ class MixFFN(nn.Module):
         self.fc2 = nn.Linear(self.hidden_dim, self.dim)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # (B, L, D) sequence form expected
         x = self.fc1(x)
         b, l, d = x.shape
-        h = w = int(l ** 0.5)
-        x_2d = x.transpose(1, 2).reshape(b, d, h, w)
+        h = int(l ** 0.5)
+        if h * h != l:
+            raise ValueError(
+                f"MixFFN requires a square sequence length; got L={l} "
+                f"(not a perfect square)."
+            )
+        x_2d = x.transpose(1, 2).reshape(b, d, h, h)
         x_2d = self.dwconv(x_2d)
         x = x_2d.flatten(2).transpose(1, 2)
         x = self.act(x)

@@ -24,7 +24,7 @@ class RMSNorm(nn.Module):
             self.register_parameter("weight", None)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        rms = x.pow(2).mean(dim=-1, keepdim=True).clamp_min(self.eps).sqrt()
+        rms = (x.pow(2).mean(dim=-1, keepdim=True) + self.eps).sqrt()
         out = x / rms
         if self.weight is not None:
             out = out * self.weight
