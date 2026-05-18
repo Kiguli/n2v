@@ -19,11 +19,12 @@ from n2v.nn.layers import PositionalEncoding, RoPE, CLSToken, DistillationToken
 
 
 def test_embedding_box():
+    """4 token indices × 4 embed_dim = 16 output features."""
     layer = nn.Embedding(num_embeddings=10, embedding_dim=4)
     layer.eval()
-    b = Box(np.zeros((4, 1)), np.ones((4, 1)))
+    b = Box(np.zeros((4, 1)), np.ones((4, 1)))  # 4 tokens
     out = embedding_reach.embedding_box(layer, [b])
-    assert out[0].dim == 4
+    assert out[0].dim == 16
 
 
 def test_positional_encoding_box():
