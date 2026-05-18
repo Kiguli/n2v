@@ -14,7 +14,9 @@ from typing import List
 import numpy as np
 
 from n2v.sets import Box, Star
+from n2v.sets.image_star import ImageStar
 from n2v.nn.layer_ops._image_shape import apply_box_lift_star
+from n2v.nn.layer_ops._layernorm_star import predicate_preserving_norm_star
 from n2v.nn.layer_ops._norm_utils import affine_after_norm
 
 
@@ -56,10 +58,43 @@ def rmsnorm_box(layer, input_boxes: List[Box]) -> List[Box]:
 
 
 def rmsnorm_star_approx(layer, input_stars: List[Star]) -> List[Star]:
+    """Predicate-preserving Star reach for RMSNorm.
+
+    Unlike LayerNorm, RMSNorm does *not* subtract the mean. The
+    helper bounds ``rms(x)`` with interval arithmetic and applies the
+    scale ``1/rms`` via a midpoint affine map plus per-feature slack.
+    """
     weight, eps = _rms_params(layer)
-
-    def _box(lb, ub):
-        norm_lb, norm_ub = _rms_interval(lb, ub, eps=eps)
-        return affine_after_norm(norm_lb, norm_ub, weight, None)
-
-    return apply_box_lift_star(input_stars, _box)
+    output: List[Star] = []
+    for s in input_stars:
+        is_image = isinstance(s, ImageStar)
+        base = s.to_star() if is_image else s
+        if base.V is None or base.V.size == 0:
+            lb, ub = base.estimate_ranges()
+            norm_lb, norm_ub = _rms_interval(lb, ub, eps=eps)
+            out_lb, out_ub = affine_after_norm(norm_lb, norm_ub, weight, None)
+            new_star = Star.from_bounds(out_lb, out_ub)
+        else:
+            lb, ub = base.estimate_ranges()
+            # rms = sqrt(mean(x^2) + eps); bound x^2 elementwise.
+            lb_flat = lb.reshape(-1)
+            ub_flat = ub.reshape(-1)
+            sq_lb = np.where(
+                np.sign(lb_flat) == np.sign(ub_flat),
+                np.minimum(lb_flat ** 2, ub_flat ** 2),
+                0.0,
+            )
+            sq_ub = np.maximum(lb_flat ** 2, ub_flat ** 2)
+            rms_lb = float(np.sqrt(sq_lb.mean() + eps))
+            rms_ub = float(np.sqrt(sq_ub.mean() + eps))
+            new_star = predicate_preserving_norm_star(
+                base,
+                sigma_bounds=(rms_lb, rms_ub),
+                weight=weight,
+                bias=None,
+                subtract_mean=False,
+            )
+        if is_image:
+            new_star = new_star.to_image_star(s.height, s.width, s.num_channels)
+        output.append(new_star)
+    return output

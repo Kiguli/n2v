@@ -20,8 +20,14 @@ import numpy as np
 import torch.nn as nn
 
 from n2v.sets import Box, Star
+from n2v.sets.image_star import ImageStar
 from n2v.nn.layer_ops._image_shape import apply_box_lift_star
-from n2v.nn.layer_ops._norm_utils import affine_after_norm, normalised_interval
+from n2v.nn.layer_ops._layernorm_star import predicate_preserving_norm_star
+from n2v.nn.layer_ops._norm_utils import (
+    affine_after_norm,
+    interval_mean_var,
+    normalised_interval,
+)
 
 
 def _ln_params(layer: nn.LayerNorm):
@@ -42,10 +48,37 @@ def layernorm_box(layer: nn.LayerNorm, input_boxes: List[Box]) -> List[Box]:
 
 
 def layernorm_star_approx(layer: nn.LayerNorm, input_stars: List[Star]) -> List[Star]:
+    """Predicate-preserving Star reach for LayerNorm.
+
+    Subtracts the input mean exactly (linear, preserves predicates) and
+    applies the scale ``1/sigma`` via a midpoint affine map plus a per-
+    feature slack predicate. The fallback box-lift is used when the
+    input has no predicate basis (e.g. a degenerate Star).
+    """
     weight, bias, eps = _ln_params(layer)
-
-    def _box(lb, ub):
-        norm_lb, norm_ub = normalised_interval(lb, ub, eps=eps)
-        return affine_after_norm(norm_lb, norm_ub, weight, bias)
-
-    return apply_box_lift_star(input_stars, _box)
+    output: List[Star] = []
+    for s in input_stars:
+        is_image = isinstance(s, ImageStar)
+        base = s.to_star() if is_image else s
+        if base.V is None or base.V.size == 0:
+            # Fall through to box-lift; nothing to preserve.
+            lb, ub = base.estimate_ranges()
+            norm_lb, norm_ub = normalised_interval(lb, ub, eps=eps)
+            out_lb, out_ub = affine_after_norm(norm_lb, norm_ub, weight, bias)
+            new_star = Star.from_bounds(out_lb, out_ub)
+        else:
+            lb, ub = base.estimate_ranges()
+            _, _, var_lb, var_ub = interval_mean_var(lb, ub)
+            sigma_lb = float(np.sqrt(float(var_lb) + eps))
+            sigma_ub = float(np.sqrt(float(var_ub) + eps))
+            new_star = predicate_preserving_norm_star(
+                base,
+                sigma_bounds=(sigma_lb, sigma_ub),
+                weight=weight,
+                bias=bias,
+                subtract_mean=True,
+            )
+        if is_image:
+            new_star = new_star.to_image_star(s.height, s.width, s.num_channels)
+        output.append(new_star)
+    return output
