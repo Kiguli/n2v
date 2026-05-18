@@ -9,6 +9,7 @@ Loading ONNX Models
 
 .. code-block:: python
 
+   import n2v
    from n2v.utils import load_onnx
 
    # Load and convert ONNX model to PyTorch

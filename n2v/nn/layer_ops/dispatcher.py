@@ -16,6 +16,10 @@ from n2v.sets import Star, Zono, Box, Hexatope, Octatope
 from n2v.sets.image_star import ImageStar
 from n2v.sets.image_zono import ImageZono
 
+# Registry consulted as a fallback when no isinstance branch matches.
+# New layers can self-register via @n2v.nn.layer_ops.register(Layer, SetCls).
+from n2v.nn.layer_ops.registry import lookup as _registry_lookup
+
 # Import layer-specific reach functions
 from . import linear_reach, relu_reach, conv2d_reach, flatten_reach
 from . import maxpool2d_reach, avgpool2d_reach, global_avgpool_reach
@@ -29,6 +33,92 @@ from . import tanh_reach
 from . import conv1d_reach
 from . import upsample_reach
 from . import sign_reach
+
+# Phase 1 ports: activations and normalisations from nnVLA
+from . import relu6_reach
+from . import elu_reach
+from . import gelu_reach
+from . import quickgelu_reach
+from . import silu_reach
+from . import hardswish_reach
+from . import layernorm_reach
+from . import rmsnorm_reach
+from . import groupnorm_reach
+from . import grn_reach
+
+# Wrapper modules detected via isinstance (introduced in Phase 1.5)
+from n2v.nn.layers.rms_norm import RMSNorm as _RMSNorm
+from n2v.nn.layers.grn import GRN as _GRN
+
+# Phase 2 ports: MLP / skip / DAG layers
+from . import layerscale_reach
+from . import drop_path_reach
+from . import add_with_frozen_skip_reach
+from . import concat_with_frozen_skip_reach
+from . import dag_add_reach
+from . import dag_concat_reach
+from . import concat2d_reach
+from . import selective_feature_fusion_reach
+from . import mix_ffn_reach
+
+from n2v.nn.layers.layer_scale import LayerScale as _LayerScale
+from n2v.nn.layers.drop_path import DropPath as _DropPath
+from n2v.nn.layers.add_with_frozen_skip import AddWithFrozenSkip as _AddWithFrozenSkip
+from n2v.nn.layers.concat_with_frozen_skip import ConcatWithFrozenSkip as _ConcatWithFrozenSkip
+from n2v.nn.layers.dag_add import DagAdd as _DagAdd
+from n2v.nn.layers.dag_concat import DagConcat as _DagConcat
+from n2v.nn.layers.concat2d import Concat2D as _Concat2D
+from n2v.nn.layers.selective_feature_fusion import SelectiveFeatureFusion as _SFF
+from n2v.nn.layers.mix_ffn import MixFFN as _MixFFN
+
+# Phase 3 ports: attention layers
+from . import softmax_attention_reach
+from . import causal_mask_reach
+from . import sparsemax_reach
+from . import relative_attention_bias_t5_reach
+from . import relative_position_bias_table_reach
+from . import linear_attention_reach
+from . import efficient_attention_sr_reach
+from . import sparse_attention_reach
+from . import cross_attention_reach
+from . import grouped_query_attention_reach
+from . import multi_query_attention_reach
+
+from n2v.nn.layers.softmax_attention import SoftmaxAttention as _SoftmaxAttention
+from n2v.nn.layers.causal_mask import CausalMask as _CausalMask
+from n2v.nn.layers.relative_attention_bias_t5 import RelativeAttentionBiasT5 as _RelAttnBiasT5
+from n2v.nn.layers.relative_position_bias_table import RelativePositionBiasTable as _RelPosBiasTable
+
+# Phase 4 ports: embeddings & tokens
+from . import embedding_reach
+from . import positional_encoding_reach
+from . import rope_reach
+from . import cls_token_reach
+from . import distillation_token_reach
+from . import segment_embedding_reach
+
+from n2v.nn.layers.cls_token import CLSToken as _CLSToken
+from n2v.nn.layers.distillation_token import DistillationToken as _DistillationToken
+from n2v.nn.layers.positional_encoding import PositionalEncoding as _PositionalEncoding
+from n2v.nn.layers.rope import RoPE as _RoPE
+
+# Phase 5 ports: conv variants & specialty
+from . import tied_linear_reach
+from . import conv2d_transpose_reach
+from . import depthwise_conv_reach
+from . import action_head_reach
+from . import action_tokenizer_reach
+from . import openmax_reach
+from . import pooler_reach
+from . import projection_head_reach
+from . import conv_token_embedding_reach
+
+from n2v.nn.layers.tied_linear import TiedLinear as _TiedLinear
+from n2v.nn.layers.action_head import ActionHead as _ActionHead
+from n2v.nn.layers.action_tokenizer import ActionTokenizer as _ActionTokenizer
+from n2v.nn.layers.openmax import OpenMax as _OpenMax
+from n2v.nn.layers.pooler import Pooler as _Pooler
+from n2v.nn.layers.projection_head import ProjectionHead as _ProjectionHead
 
 # ONNX types (onnx2torch is a required dependency)
 from onnx2torch.node_converters.global_average_pool import (
@@ -210,6 +300,83 @@ def _reach_layer_star(layer: nn.Module, input_sets: List, method: str, **kwargs)
     elif _is_sign_layer(layer):
         return sign_reach.sign_star(layer, input_sets, method, **kwargs)
 
+    elif _resolve_onnx_function_substitute(layer) is not None:
+        return _reach_layer_star(
+            _resolve_onnx_function_substitute(layer), input_sets, method, **kwargs
+        )
+
+    # ----- Phase 1: activations -----
+    elif isinstance(layer, nn.ReLU6):
+        return relu6_reach.relu6_star_approx(input_sets)
+    elif isinstance(layer, nn.ELU):
+        return elu_reach.elu_star_approx(input_sets, alpha=float(layer.alpha))
+    elif isinstance(layer, nn.GELU):
+        return gelu_reach.gelu_star_approx(input_sets)
+    elif isinstance(layer, nn.SiLU):
+        return silu_reach.silu_star_approx(input_sets)
+    elif isinstance(layer, nn.Hardswish):
+        return hardswish_reach.hardswish_star_approx(input_sets)
+
+    # ----- Phase 1: normalisations -----
+    elif isinstance(layer, _RMSNorm):
+        return rmsnorm_reach.rmsnorm_star_approx(layer, input_sets)
+    elif isinstance(layer, nn.LayerNorm):
+        return layernorm_reach.layernorm_star_approx(layer, input_sets)
+    elif isinstance(layer, nn.GroupNorm):
+        return groupnorm_reach.groupnorm_star_approx(layer, input_sets)
+    elif isinstance(layer, _GRN):
+        return grn_reach.grn_star_approx(layer, input_sets)
+
+    # ----- Phase 2: elementwise-affine MLP/skip ops -----
+    elif isinstance(layer, _LayerScale):
+        return layerscale_reach.layerscale_star(layer, input_sets)
+    elif isinstance(layer, _DropPath):
+        return drop_path_reach.drop_path_star(layer, input_sets)
+    elif isinstance(layer, _AddWithFrozenSkip):
+        return add_with_frozen_skip_reach.add_with_frozen_skip_star(layer, input_sets)
+    elif isinstance(layer, _ConcatWithFrozenSkip):
+        return concat_with_frozen_skip_reach.concat_with_frozen_skip_star(layer, input_sets)
+    elif isinstance(layer, _MixFFN):
+        return mix_ffn_reach.mix_ffn_passthrough(layer, input_sets, method, **kwargs)
+
+    # ----- Phase 3: single-input attention helpers -----
+    elif isinstance(layer, _CausalMask):
+        return causal_mask_reach.causal_mask_star(layer, input_sets)
+    elif isinstance(layer, (_RelAttnBiasT5, _RelPosBiasTable)):
+        return relative_attention_bias_t5_reach.relative_attention_bias_t5_star(layer, input_sets)
+    elif isinstance(layer, _SoftmaxAttention):
+        raise NotImplementedError(
+            "SoftmaxAttention requires multi-input (Q, K, V) dispatch via n2v.nn.reach."
+        )
+
+    # ----- Phase 4: embeddings & tokens -----
+    elif isinstance(layer, nn.Embedding):
+        return embedding_reach.embedding_star(layer, input_sets)
+    elif isinstance(layer, _PositionalEncoding):
+        return positional_encoding_reach.positional_encoding_star(layer, input_sets)
+    elif isinstance(layer, _RoPE):
+        return rope_reach.rope_star(layer, input_sets)
+    elif isinstance(layer, _CLSToken):
+        return cls_token_reach.cls_token_star(layer, input_sets)
+    elif isinstance(layer, _DistillationToken):
+        return distillation_token_reach.distillation_token_star(layer, input_sets)
+
+    # ----- Phase 5: conv variants & specialty -----
+    elif isinstance(layer, _TiedLinear):
+        return tied_linear_reach.tied_linear_star(layer, input_sets)
+    elif isinstance(layer, nn.ConvTranspose2d):
+        return conv2d_transpose_reach.conv2d_transpose_star(layer, input_sets)
+    elif isinstance(layer, _ActionHead):
+        return action_head_reach.action_head_star(layer, input_sets)
+    elif isinstance(layer, _ActionTokenizer):
+        return action_tokenizer_reach.action_tokenizer_star_approx(layer, input_sets)
+    elif isinstance(layer, _OpenMax):
+        return openmax_reach.openmax_star_approx(layer, input_sets)
+    elif isinstance(layer, _Pooler):
+        return pooler_reach.pooler_passthrough(layer, input_sets, method, **kwargs)
+    elif isinstance(layer, _ProjectionHead):
+        return projection_head_reach.projection_head_passthrough(layer, input_sets, method, **kwargs)
+
     elif isinstance(layer, (nn.Identity, nn.Dropout, nn.Dropout2d, nn.Dropout3d)):
         return input_sets
 
@@ -221,6 +388,9 @@ def _reach_layer_star(layer: nn.Module, input_sets: List, method: str, **kwargs)
         return current_sets
 
     else:
+        handler = _registry_lookup(layer, Star)
+        if handler is not None:
+            return handler(layer, input_sets, method, **kwargs)
         raise NotImplementedError(
             f"Star reachability not implemented for layer type: {type(layer).__name__}"
         )
@@ -286,6 +456,51 @@ def _reach_layer_zono(layer: nn.Module, input_sets: List, method: str, **kwargs)
     elif _is_sign_layer(layer):
         return sign_reach.sign_zono(input_sets)
 
+    elif _resolve_onnx_function_substitute(layer) is not None:
+        return _reach_layer_zono(
+            _resolve_onnx_function_substitute(layer), input_sets, method, **kwargs
+        )
+
+    # ----- Phase 2: elementwise-affine MLP/skip ops -----
+    elif isinstance(layer, _LayerScale):
+        return layerscale_reach.layerscale_zono(layer, input_sets)
+    elif isinstance(layer, _DropPath):
+        return drop_path_reach.drop_path_zono(layer, input_sets)
+    elif isinstance(layer, _AddWithFrozenSkip):
+        return add_with_frozen_skip_reach.add_with_frozen_skip_zono(layer, input_sets)
+    elif isinstance(layer, _ConcatWithFrozenSkip):
+        return concat_with_frozen_skip_reach.concat_with_frozen_skip_zono(layer, input_sets)
+
+    # ----- Phase 3: single-input attention helpers (zono coverage limited) -----
+    elif isinstance(layer, _CausalMask):
+        return causal_mask_reach.causal_mask_zono(layer, input_sets)
+    elif isinstance(layer, (_RelAttnBiasT5, _RelPosBiasTable)):
+        return relative_attention_bias_t5_reach.relative_attention_bias_t5_zono(layer, input_sets)
+
+    # ----- Phase 4: embeddings & tokens -----
+    elif isinstance(layer, nn.Embedding):
+        return embedding_reach.embedding_zono(layer, input_sets)
+    elif isinstance(layer, _PositionalEncoding):
+        return positional_encoding_reach.positional_encoding_zono(layer, input_sets)
+    elif isinstance(layer, _RoPE):
+        return rope_reach.rope_zono(layer, input_sets)
+    elif isinstance(layer, _CLSToken):
+        return cls_token_reach.cls_token_zono(layer, input_sets)
+    elif isinstance(layer, _DistillationToken):
+        return distillation_token_reach.distillation_token_zono(layer, input_sets)
+
+    # ----- Phase 5: conv variants & specialty -----
+    elif isinstance(layer, _TiedLinear):
+        return tied_linear_reach.tied_linear_zono(layer, input_sets)
+    elif isinstance(layer, nn.ConvTranspose2d):
+        return conv2d_transpose_reach.conv2d_transpose_zono(layer, input_sets)
+    elif isinstance(layer, _ActionHead):
+        return action_head_reach.action_head_zono(layer, input_sets)
+    elif isinstance(layer, _Pooler):
+        return pooler_reach.pooler_passthrough(layer, input_sets, method, **kwargs)
+    elif isinstance(layer, _ProjectionHead):
+        return projection_head_reach.projection_head_passthrough(layer, input_sets, method, **kwargs)
+
     elif isinstance(layer, (nn.Identity, nn.Dropout, nn.Dropout2d, nn.Dropout3d)):
         return input_sets
 
@@ -296,6 +511,9 @@ def _reach_layer_zono(layer: nn.Module, input_sets: List, method: str, **kwargs)
         return current_sets
 
     else:
+        handler = _registry_lookup(layer, Zono)
+        if handler is not None:
+            return handler(layer, input_sets, method, **kwargs)
         raise NotImplementedError(
             f"Zono reachability not implemented for layer type: {type(layer).__name__}"
         )
@@ -343,6 +561,93 @@ def _reach_layer_box(layer: nn.Module, input_sets: List, method: str, **kwargs) 
     elif _is_sign_layer(layer):
         return sign_reach.sign_box(input_sets)
 
+    elif _resolve_onnx_function_substitute(layer) is not None:
+        return _reach_layer_box(
+            _resolve_onnx_function_substitute(layer), input_sets, method, **kwargs
+        )
+
+    # ----- Phase 1: activations -----
+    elif isinstance(layer, nn.ReLU6):
+        return relu6_reach.relu6_box(input_sets)
+    elif isinstance(layer, nn.ELU):
+        return elu_reach.elu_box(input_sets, alpha=float(layer.alpha))
+    elif isinstance(layer, nn.GELU):
+        return gelu_reach.gelu_box(input_sets)
+    elif isinstance(layer, nn.SiLU):
+        return silu_reach.silu_box(input_sets)
+    elif isinstance(layer, nn.Hardswish):
+        return hardswish_reach.hardswish_box(input_sets)
+
+    # ----- Phase 1: normalisations -----
+    elif isinstance(layer, _RMSNorm):
+        return rmsnorm_reach.rmsnorm_box(layer, input_sets)
+    elif isinstance(layer, nn.LayerNorm):
+        return layernorm_reach.layernorm_box(layer, input_sets)
+    elif isinstance(layer, nn.GroupNorm):
+        return groupnorm_reach.groupnorm_box(layer, input_sets)
+    elif isinstance(layer, _GRN):
+        return grn_reach.grn_box(layer, input_sets)
+
+    # ----- Phase 2: skip / MLP / DAG -----
+    elif isinstance(layer, _LayerScale):
+        return layerscale_reach.layerscale_box(layer, input_sets)
+    elif isinstance(layer, _DropPath):
+        return drop_path_reach.drop_path_box(layer, input_sets)
+    elif isinstance(layer, _AddWithFrozenSkip):
+        return add_with_frozen_skip_reach.add_with_frozen_skip_box(layer, input_sets)
+    elif isinstance(layer, _ConcatWithFrozenSkip):
+        return concat_with_frozen_skip_reach.concat_with_frozen_skip_box(layer, input_sets)
+    elif isinstance(layer, (_DagAdd, _DagConcat, _Concat2D, _SFF)):
+        # Multi-input ops: dispatcher's single-input path can't satisfy
+        # them. The graph-level traversal in n2v.nn.reach handles their
+        # multi-port inputs by calling the per-op helpers in
+        # dag_add_reach / dag_concat_reach / concat2d_reach /
+        # selective_feature_fusion_reach with the second-port stream in
+        # ``extras``. Raising here keeps single-input dispatch sound.
+        raise NotImplementedError(
+            f"{type(layer).__name__} requires multi-input dispatch via n2v.nn.reach."
+        )
+    elif isinstance(layer, _MixFFN):
+        return mix_ffn_reach.mix_ffn_passthrough(layer, input_sets, method, **kwargs)
+
+    # ----- Phase 3: single-input attention helpers -----
+    elif isinstance(layer, _CausalMask):
+        return causal_mask_reach.causal_mask_box(layer, input_sets)
+    elif isinstance(layer, (_RelAttnBiasT5, _RelPosBiasTable)):
+        return relative_attention_bias_t5_reach.relative_attention_bias_t5_box(layer, input_sets)
+    elif isinstance(layer, _SoftmaxAttention):
+        raise NotImplementedError(
+            "SoftmaxAttention requires multi-input (Q, K, V) dispatch via n2v.nn.reach."
+        )
+
+    # ----- Phase 4: embeddings & tokens -----
+    elif isinstance(layer, nn.Embedding):
+        return embedding_reach.embedding_box(layer, input_sets)
+    elif isinstance(layer, _PositionalEncoding):
+        return positional_encoding_reach.positional_encoding_box(layer, input_sets)
+    elif isinstance(layer, _RoPE):
+        return rope_reach.rope_box(layer, input_sets)
+    elif isinstance(layer, _CLSToken):
+        return cls_token_reach.cls_token_box(layer, input_sets)
+    elif isinstance(layer, _DistillationToken):
+        return distillation_token_reach.distillation_token_box(layer, input_sets)
+
+    # ----- Phase 5: conv variants & specialty -----
+    elif isinstance(layer, _TiedLinear):
+        return tied_linear_reach.tied_linear_box(layer, input_sets)
+    elif isinstance(layer, nn.ConvTranspose2d):
+        return conv2d_transpose_reach.conv2d_transpose_box(layer, input_sets)
+    elif isinstance(layer, _ActionHead):
+        return action_head_reach.action_head_box(layer, input_sets)
+    elif isinstance(layer, _ActionTokenizer):
+        return action_tokenizer_reach.action_tokenizer_box(layer, input_sets)
+    elif isinstance(layer, _OpenMax):
+        return openmax_reach.openmax_box(layer, input_sets)
+    elif isinstance(layer, _Pooler):
+        return pooler_reach.pooler_passthrough(layer, input_sets, method, **kwargs)
+    elif isinstance(layer, _ProjectionHead):
+        return projection_head_reach.projection_head_passthrough(layer, input_sets, method, **kwargs)
+
     elif isinstance(layer, (nn.Identity, nn.Dropout, nn.Dropout2d, nn.Dropout3d)):
         return input_sets
 
@@ -353,6 +658,9 @@ def _reach_layer_box(layer: nn.Module, input_sets: List, method: str, **kwargs) 
         return current_sets
 
     else:
+        handler = _registry_lookup(layer, Box)
+        if handler is not None:
+            return handler(layer, input_sets, method, **kwargs)
         raise NotImplementedError(
             f"Box reachability not implemented for layer type: {type(layer).__name__}"
         )
@@ -360,6 +668,11 @@ def _reach_layer_box(layer: nn.Module, input_sets: List, method: str, **kwargs) 
 
 def _reach_layer_hexatope(layer: nn.Module, input_sets: List, method: str, **kwargs) -> List:
     """Hexatope reachability through a layer."""
+
+    if _resolve_onnx_function_substitute(layer) is not None:
+        return _reach_layer_hexatope(
+            _resolve_onnx_function_substitute(layer), input_sets, method, **kwargs
+        )
 
     if isinstance(layer, nn.Linear):
         return linear_reach.linear_hexatope(layer, input_sets)
@@ -386,6 +699,29 @@ def _reach_layer_hexatope(layer: nn.Module, input_sets: List, method: str, **kwa
     elif isinstance(layer, _ONNX_CAST_TYPES):
         return input_sets
 
+    elif isinstance(layer, _TiedLinear):
+        return tied_linear_reach.tied_linear_hexatope(layer, input_sets)
+    elif isinstance(layer, _ActionHead):
+        return action_head_reach.action_head_hexatope(layer, input_sets)
+
+    # Elementwise-affine wrappers — route via linear_reach surrogates.
+    elif isinstance(layer, _LayerScale):
+        return layerscale_reach.layerscale_hexatope(layer, input_sets)
+    elif isinstance(layer, _AddWithFrozenSkip):
+        return add_with_frozen_skip_reach.add_with_frozen_skip_hexatope(layer, input_sets)
+    elif isinstance(layer, _RoPE):
+        return rope_reach.rope_hexatope(layer, input_sets)
+    elif isinstance(layer, _PositionalEncoding):
+        return positional_encoding_reach.positional_encoding_hexatope(layer, input_sets)
+    elif isinstance(layer, _CausalMask):
+        return causal_mask_reach.causal_mask_hexatope(layer, input_sets)
+    elif isinstance(layer, nn.ConvTranspose2d):
+        return conv2d_transpose_reach.conv2d_transpose_hexatope(layer, input_sets)
+    elif isinstance(layer, (_RelAttnBiasT5, _RelPosBiasTable)):
+        return relative_attention_bias_t5_reach.relative_attention_bias_t5_hexatope(
+            layer, input_sets
+        )
+
     elif isinstance(layer, (nn.Identity, nn.Dropout, nn.Dropout2d, nn.Dropout3d)):
         return input_sets
 
@@ -396,6 +732,9 @@ def _reach_layer_hexatope(layer: nn.Module, input_sets: List, method: str, **kwa
         return current_sets
 
     else:
+        handler = _registry_lookup(layer, Hexatope)
+        if handler is not None:
+            return handler(layer, input_sets, method, **kwargs)
         raise NotImplementedError(
             f"Hexatope reachability not implemented for layer type: {type(layer).__name__}"
         )
@@ -403,6 +742,11 @@ def _reach_layer_hexatope(layer: nn.Module, input_sets: List, method: str, **kwa
 
 def _reach_layer_octatope(layer: nn.Module, input_sets: List, method: str, **kwargs) -> List:
     """Octatope reachability through a layer."""
+
+    if _resolve_onnx_function_substitute(layer) is not None:
+        return _reach_layer_octatope(
+            _resolve_onnx_function_substitute(layer), input_sets, method, **kwargs
+        )
 
     if isinstance(layer, nn.Linear):
         return linear_reach.linear_octatope(layer, input_sets)
@@ -429,6 +773,29 @@ def _reach_layer_octatope(layer: nn.Module, input_sets: List, method: str, **kwa
     elif isinstance(layer, _ONNX_CAST_TYPES):
         return input_sets
 
+    elif isinstance(layer, _TiedLinear):
+        return tied_linear_reach.tied_linear_octatope(layer, input_sets)
+    elif isinstance(layer, _ActionHead):
+        return action_head_reach.action_head_octatope(layer, input_sets)
+
+    # Elementwise-affine wrappers — route via linear_reach surrogates.
+    elif isinstance(layer, _LayerScale):
+        return layerscale_reach.layerscale_octatope(layer, input_sets)
+    elif isinstance(layer, _AddWithFrozenSkip):
+        return add_with_frozen_skip_reach.add_with_frozen_skip_octatope(layer, input_sets)
+    elif isinstance(layer, _RoPE):
+        return rope_reach.rope_octatope(layer, input_sets)
+    elif isinstance(layer, _PositionalEncoding):
+        return positional_encoding_reach.positional_encoding_octatope(layer, input_sets)
+    elif isinstance(layer, _CausalMask):
+        return causal_mask_reach.causal_mask_octatope(layer, input_sets)
+    elif isinstance(layer, nn.ConvTranspose2d):
+        return conv2d_transpose_reach.conv2d_transpose_octatope(layer, input_sets)
+    elif isinstance(layer, (_RelAttnBiasT5, _RelPosBiasTable)):
+        return relative_attention_bias_t5_reach.relative_attention_bias_t5_octatope(
+            layer, input_sets
+        )
+
     elif isinstance(layer, (nn.Identity, nn.Dropout, nn.Dropout2d, nn.Dropout3d)):
         return input_sets
 
@@ -439,6 +806,9 @@ def _reach_layer_octatope(layer: nn.Module, input_sets: List, method: str, **kwa
         return current_sets
 
     else:
+        handler = _registry_lookup(layer, Octatope)
+        if handler is not None:
+            return handler(layer, input_sets, method, **kwargs)
         raise NotImplementedError(
             f"Octatope reachability not implemented for layer type: {type(layer).__name__}"
         )
@@ -453,6 +823,39 @@ def _is_sign_layer(layer: nn.Module) -> bool:
     if isinstance(layer, _ONNX_FUNCTION_TYPES):
         return getattr(layer, 'function', None) is torch.sign
     return False
+
+
+def _onnx_function_target(layer: nn.Module):
+    """Return the wrapped callable of an OnnxFunction, or ``None`` otherwise."""
+    if isinstance(layer, _ONNX_FUNCTION_TYPES):
+        return getattr(layer, 'function', None)
+    return None
+
+
+# Map a wrapped function (as seen on OnnxFunction.function) → torch.nn.Module
+# class to substitute when dispatching reachability. The dispatcher consults
+# this *before* its isinstance chains so an ONNX-loaded model behaves the same
+# as an equivalent native PyTorch model.
+import torch.nn.functional as F  # noqa: E402 — kept local to avoid eager top-level import
+_ONNX_FUNCTION_SUBSTITUTES: dict = {
+    F.gelu: nn.GELU,
+    F.silu: nn.SiLU,
+    F.hardswish: nn.Hardswish,
+    F.relu6: nn.ReLU6,
+    F.elu: nn.ELU,
+}
+
+
+def _resolve_onnx_function_substitute(layer: nn.Module):
+    """If ``layer`` is an OnnxFunction wrapping a known activation, return a
+    fresh substitute module the dispatcher can route normally; else None."""
+    target = _onnx_function_target(layer)
+    if target is None:
+        return None
+    cls = _ONNX_FUNCTION_SUBSTITUTES.get(target)
+    if cls is None:
+        return None
+    return cls()
 
 
 # ===========================================================================
