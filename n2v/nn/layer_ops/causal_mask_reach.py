@@ -29,13 +29,24 @@ def _make_translation(mask_vec: np.ndarray) -> nn.Linear:
 
 
 def _mask_vec(layer, input_dim: int) -> np.ndarray:
+    """Flatten the layer's ``(L, L)`` mask into a length-``L*L`` vector.
+
+    The reach surrogate is an affine translation by the mask, so the
+    input set must be the flattened ``(L, L)`` attention logits. Non-
+    square ``input_dim`` is rejected with a clear error rather than
+    silently treated as no-mask (which would be unsound, since the
+    concrete forward adds large negative values to upper-triangle
+    entries).
+    """
     full = layer.mask.detach().cpu().numpy().astype(np.float64)
-    # Flatten the LxL mask to a vector of length L*L matching the
-    # flattened logits the layer is added to.
     l = int(np.sqrt(input_dim))
     if l * l != input_dim:
-        # Fallback: skip the mask if shape unknown (sound no-op).
-        return np.zeros(input_dim, dtype=np.float64)
+        raise ValueError(
+            f"CausalMask reach requires a square (L, L) flattened input, "
+            f"got input_dim={input_dim}. A zero fallback would be unsound "
+            f"since the concrete forward adds {layer.fill_value} to masked "
+            f"entries."
+        )
     return full[:l, :l].reshape(-1)
 
 

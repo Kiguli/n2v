@@ -19,10 +19,20 @@ from n2v.nn.layer_ops import linear_reach
 
 
 def _pe_vec(layer, dim: int) -> np.ndarray:
+    """Slice the layer's precomputed positional table to the input dim.
+
+    Rejects inputs longer than ``max_len`` because the concrete forward
+    cannot extend beyond the precomputed table either — silently
+    padding with zeros would hide a runtime error in the model.
+    """
     pe = layer.pe.detach().cpu().numpy().astype(np.float64).reshape(-1)
     if pe.size < dim:
-        pad = np.zeros(dim - pe.size, dtype=np.float64)
-        return np.concatenate([pe, pad])
+        raise ValueError(
+            f"PositionalEncoding flat-vector length is {pe.size} but the "
+            f"input set dim is {dim}. The concrete forward would fail on "
+            f"this input (positions beyond max_len={layer.max_len} have "
+            f"no encoding)."
+        )
     return pe[:dim]
 
 

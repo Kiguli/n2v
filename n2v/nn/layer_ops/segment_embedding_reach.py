@@ -20,11 +20,29 @@ from n2v.nn.layer_ops import linear_reach
 
 
 def _emb_translation(layer, dim: int, segment_ids: Optional[torch.Tensor]) -> np.ndarray:
+    """Concrete embedding translation given fixed ``segment_ids``.
+
+    ``segment_ids`` is required: the concrete forward always adds the
+    learned per-segment embedding, so returning a zero translation
+    when ``segment_ids is None`` would silently treat SegmentEmbedding
+    as the identity (unsound for any nonzero training).
+    """
     table = layer.embedding.weight.detach().cpu().numpy().astype(np.float64)
     if segment_ids is None:
-        return np.zeros(dim, dtype=np.float64)
+        raise ValueError(
+            "SegmentEmbedding reach requires explicit `segment_ids`. "
+            "Treating them as zero would silently make this layer an "
+            "identity and produce unsound reach for any trained segment "
+            "embedding."
+        )
     ids = segment_ids.detach().cpu().numpy().reshape(-1)
     embedded = table[ids]
+    if embedded.size != dim:
+        raise ValueError(
+            f"SegmentEmbedding translation size {embedded.size} does not "
+            f"match input set dim {dim}. Provide `segment_ids` whose "
+            f"product with embedding_dim equals the flattened input dim."
+        )
     return embedded.reshape(-1)
 
 
@@ -41,8 +59,6 @@ def segment_embedding_star(layer, input_stars: List[Star], segment_ids: Optional
     out: List[Star] = []
     for s in input_stars:
         bias = _emb_translation(layer, s.dim, segment_ids)
-        if bias.size != s.dim:
-            bias = np.zeros(s.dim, dtype=np.float64)
         out.extend(linear_reach.linear_star(_make_translation(bias), [s]))
     return out
 
@@ -51,8 +67,6 @@ def segment_embedding_box(layer, input_boxes: List[Box], segment_ids: Optional[t
     out: List[Box] = []
     for b in input_boxes:
         bias = _emb_translation(layer, b.dim, segment_ids)
-        if bias.size != b.dim:
-            bias = np.zeros(b.dim, dtype=np.float64)
         out.extend(linear_reach.linear_box(_make_translation(bias), [b]))
     return out
 
@@ -61,8 +75,6 @@ def segment_embedding_zono(layer, input_zonos: List[Zono], segment_ids: Optional
     out: List[Zono] = []
     for z in input_zonos:
         bias = _emb_translation(layer, z.dim, segment_ids)
-        if bias.size != z.dim:
-            bias = np.zeros(z.dim, dtype=np.float64)
         out.extend(linear_reach.linear_zono(_make_translation(bias), [z]))
     return out
 
@@ -73,8 +85,6 @@ def segment_embedding_hexatope(
     out: List[Hexatope] = []
     for s in input_sets:
         bias = _emb_translation(layer, s.dim, segment_ids)
-        if bias.size != s.dim:
-            bias = np.zeros(s.dim, dtype=np.float64)
         out.extend(linear_reach.linear_hexatope(_make_translation(bias), [s]))
     return out
 
@@ -85,7 +95,5 @@ def segment_embedding_octatope(
     out: List[Octatope] = []
     for s in input_sets:
         bias = _emb_translation(layer, s.dim, segment_ids)
-        if bias.size != s.dim:
-            bias = np.zeros(s.dim, dtype=np.float64)
         out.extend(linear_reach.linear_octatope(_make_translation(bias), [s]))
     return out
