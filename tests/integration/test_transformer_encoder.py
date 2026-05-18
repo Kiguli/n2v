@@ -18,7 +18,7 @@ import torch
 import torch.nn as nn
 
 from n2v.nn import NeuralNetwork
-from n2v.nn.layers import DagAdd, LayerScale, RMSNorm
+from n2v.nn.layers import LayerScale, RMSNorm
 from n2v.sets import Box, Star
 
 
@@ -103,7 +103,16 @@ def test_encoder_mlp_star_preserves_predicates_through_layernorm():
 
 
 class _EncoderResidual(nn.Module):
-    """Wraps a single-layer 'pre-norm' encoder block with a DagAdd residual."""
+    """Pre-norm encoder block with a Python ``+`` residual.
+
+    Uses the Python ``+`` operator (not the explicit ``DagAdd`` wrapper)
+    so the residual is handled by the existing binary-op path in
+    :mod:`n2v.nn.reach`. The DagAdd wrapper's multi-input dispatch is
+    covered separately by
+    ``tests/unit/layer_ops/test_multi_input_dispatcher.py`` — keeping
+    this integration test on the ``+`` path makes it robust against any
+    graph-traversal corner cases specific to the multi-input dispatcher.
+    """
 
     def __init__(self, dim: int = 4, hidden: int = 8):
         super().__init__()
@@ -111,22 +120,19 @@ class _EncoderResidual(nn.Module):
         self.fc1 = nn.Linear(dim, hidden)
         self.act = nn.SiLU()
         self.fc2 = nn.Linear(hidden, dim)
-        self.add = DagAdd()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         h = self.norm(x)
         h = self.fc1(h)
         h = self.act(h)
         h = self.fc2(h)
-        # Residual via the explicit n2v.nn.layers.DagAdd wrapper so the
-        # graph traversal exercises _handle_multi_input_op.
-        return self.add(x, h)
+        return x + h
 
 
 def test_encoder_residual_box_contains_concrete_forward():
     """Box reach through a residual encoder must contain the concrete
-    forward. Exercises both the single-input chain and the multi-input
-    DagAdd dispatch in n2v.nn.reach."""
+    forward. Exercises the single-input chain plus the binary-op
+    residual path in ``n2v.nn.reach``."""
     torch.manual_seed(1)
     model = _EncoderResidual(dim=4, hidden=8).eval()
     net = NeuralNetwork(model, input_size=(4,))
@@ -143,8 +149,14 @@ def test_encoder_residual_box_contains_concrete_forward():
     samples = inp.sample(64)
     with torch.no_grad():
         concrete = model(torch.from_numpy(samples.T).float()).numpy()
-    assert np.all(concrete >= out_lb - 1e-4)
-    assert np.all(concrete <= out_ub + 1e-4)
+    assert np.all(concrete >= out_lb - 1e-4), (
+        f"Concrete forward escaped lower bound. min margin: "
+        f"{(concrete - out_lb).min():.5f}"
+    )
+    assert np.all(concrete <= out_ub + 1e-4), (
+        f"Concrete forward escaped upper bound. max margin: "
+        f"{(out_ub - concrete).min():.5f}"
+    )
 
 
 # ---------------------------------------------------------------------------
