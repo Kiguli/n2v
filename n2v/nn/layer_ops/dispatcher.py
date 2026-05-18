@@ -300,6 +300,11 @@ def _reach_layer_star(layer: nn.Module, input_sets: List, method: str, **kwargs)
     elif _is_sign_layer(layer):
         return sign_reach.sign_star(layer, input_sets, method, **kwargs)
 
+    elif _resolve_onnx_function_substitute(layer) is not None:
+        return _reach_layer_star(
+            _resolve_onnx_function_substitute(layer), input_sets, method, **kwargs
+        )
+
     # ----- Phase 1: activations -----
     elif isinstance(layer, nn.ReLU6):
         return relu6_reach.relu6_star_approx(input_sets)
@@ -451,6 +456,11 @@ def _reach_layer_zono(layer: nn.Module, input_sets: List, method: str, **kwargs)
     elif _is_sign_layer(layer):
         return sign_reach.sign_zono(input_sets)
 
+    elif _resolve_onnx_function_substitute(layer) is not None:
+        return _reach_layer_zono(
+            _resolve_onnx_function_substitute(layer), input_sets, method, **kwargs
+        )
+
     # ----- Phase 2: elementwise-affine MLP/skip ops -----
     elif isinstance(layer, _LayerScale):
         return layerscale_reach.layerscale_zono(layer, input_sets)
@@ -550,6 +560,11 @@ def _reach_layer_box(layer: nn.Module, input_sets: List, method: str, **kwargs) 
 
     elif _is_sign_layer(layer):
         return sign_reach.sign_box(input_sets)
+
+    elif _resolve_onnx_function_substitute(layer) is not None:
+        return _reach_layer_box(
+            _resolve_onnx_function_substitute(layer), input_sets, method, **kwargs
+        )
 
     # ----- Phase 1: activations -----
     elif isinstance(layer, nn.ReLU6):
@@ -654,6 +669,11 @@ def _reach_layer_box(layer: nn.Module, input_sets: List, method: str, **kwargs) 
 def _reach_layer_hexatope(layer: nn.Module, input_sets: List, method: str, **kwargs) -> List:
     """Hexatope reachability through a layer."""
 
+    if _resolve_onnx_function_substitute(layer) is not None:
+        return _reach_layer_hexatope(
+            _resolve_onnx_function_substitute(layer), input_sets, method, **kwargs
+        )
+
     if isinstance(layer, nn.Linear):
         return linear_reach.linear_hexatope(layer, input_sets)
 
@@ -716,6 +736,11 @@ def _reach_layer_hexatope(layer: nn.Module, input_sets: List, method: str, **kwa
 
 def _reach_layer_octatope(layer: nn.Module, input_sets: List, method: str, **kwargs) -> List:
     """Octatope reachability through a layer."""
+
+    if _resolve_onnx_function_substitute(layer) is not None:
+        return _reach_layer_octatope(
+            _resolve_onnx_function_substitute(layer), input_sets, method, **kwargs
+        )
 
     if isinstance(layer, nn.Linear):
         return linear_reach.linear_octatope(layer, input_sets)
@@ -786,6 +811,39 @@ def _is_sign_layer(layer: nn.Module) -> bool:
     if isinstance(layer, _ONNX_FUNCTION_TYPES):
         return getattr(layer, 'function', None) is torch.sign
     return False
+
+
+def _onnx_function_target(layer: nn.Module):
+    """Return the wrapped callable of an OnnxFunction, or ``None`` otherwise."""
+    if isinstance(layer, _ONNX_FUNCTION_TYPES):
+        return getattr(layer, 'function', None)
+    return None
+
+
+# Map a wrapped function (as seen on OnnxFunction.function) → torch.nn.Module
+# class to substitute when dispatching reachability. The dispatcher consults
+# this *before* its isinstance chains so an ONNX-loaded model behaves the same
+# as an equivalent native PyTorch model.
+import torch.nn.functional as F  # noqa: E402 — kept local to avoid eager top-level import
+_ONNX_FUNCTION_SUBSTITUTES: dict = {
+    F.gelu: nn.GELU,
+    F.silu: nn.SiLU,
+    F.hardswish: nn.Hardswish,
+    F.relu6: nn.ReLU6,
+    F.elu: nn.ELU,
+}
+
+
+def _resolve_onnx_function_substitute(layer: nn.Module):
+    """If ``layer`` is an OnnxFunction wrapping a known activation, return a
+    fresh substitute module the dispatcher can route normally; else None."""
+    target = _onnx_function_target(layer)
+    if target is None:
+        return None
+    cls = _ONNX_FUNCTION_SUBSTITUTES.get(target)
+    if cls is None:
+        return None
+    return cls()
 
 
 # ===========================================================================
