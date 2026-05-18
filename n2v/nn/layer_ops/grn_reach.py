@@ -15,7 +15,7 @@ from typing import List
 import numpy as np
 
 from n2v.sets import Box, Star
-from n2v.sets.image_star import ImageStar
+from n2v.nn.layer_ops._image_shape import apply_box_lift_star
 from n2v.nn.layer_ops._norm_utils import affine_after_norm
 
 
@@ -79,20 +79,14 @@ def grn_box(layer, input_boxes: List[Box]) -> List[Box]:
 
 def grn_star_approx(layer, input_stars: List[Star]) -> List[Star]:
     dim, gamma, beta, eps = _grn_params(layer)
-    output: List[Star] = []
-    for s in input_stars:
-        base = s.to_star() if isinstance(s, ImageStar) else s
-        lb, ub = base.estimate_ranges()
+
+    def _box(lb, ub):
         xnx_lb, xnx_ub = _grn_interval(lb, ub, dim, eps)
         if dim > 0 and gamma is not None:
             hw = xnx_lb.size // dim
             g_b = np.tile(gamma, hw).reshape(-1, 1)
             be_b = np.tile(beta, hw).reshape(-1, 1) if beta is not None else None
             xnx_lb, xnx_ub = affine_after_norm(xnx_lb, xnx_ub, g_b, be_b)
-        out_lb = xnx_lb + lb.reshape(-1, 1)
-        out_ub = xnx_ub + ub.reshape(-1, 1)
-        out = Star.from_bounds(out_lb, out_ub)
-        if isinstance(s, ImageStar):
-            out = out.to_image_star(s.height, s.width, s.num_channels)
-        output.append(out)
-    return output
+        return xnx_lb + lb.reshape(-1, 1), xnx_ub + ub.reshape(-1, 1)
+
+    return apply_box_lift_star(input_stars, _box)

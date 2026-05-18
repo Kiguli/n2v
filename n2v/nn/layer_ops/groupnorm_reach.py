@@ -16,7 +16,7 @@ import numpy as np
 import torch.nn as nn
 
 from n2v.sets import Box, Star
-from n2v.sets.image_star import ImageStar
+from n2v.nn.layer_ops._image_shape import apply_box_lift_star
 from n2v.nn.layer_ops._norm_utils import affine_after_norm, normalised_interval
 
 
@@ -79,18 +79,14 @@ def groupnorm_box(layer: nn.GroupNorm, input_boxes: List[Box]) -> List[Box]:
 
 def groupnorm_star_approx(layer: nn.GroupNorm, input_stars: List[Star]) -> List[Star]:
     num_groups, num_channels, weight, bias, eps = _gn_params(layer)
-    output: List[Star] = []
-    for s in input_stars:
-        base = s.to_star() if isinstance(s, ImageStar) else s
-        lb, ub = base.estimate_ranges()
+
+    def _box(lb, ub):
         norm_lb, norm_ub = _groupnorm_interval(lb, ub, num_groups, num_channels, eps)
         if weight is not None or bias is not None:
             spatial = norm_lb.size // num_channels
             w_b = np.repeat(weight, spatial) if weight is not None else None
             b_b = np.repeat(bias, spatial) if bias is not None else None
             norm_lb, norm_ub = affine_after_norm(norm_lb, norm_ub, w_b, b_b)
-        out = Star.from_bounds(norm_lb, norm_ub)
-        if isinstance(s, ImageStar):
-            out = out.to_image_star(s.height, s.width, s.num_channels)
-        output.append(out)
-    return output
+        return norm_lb, norm_ub
+
+    return apply_box_lift_star(input_stars, _box)

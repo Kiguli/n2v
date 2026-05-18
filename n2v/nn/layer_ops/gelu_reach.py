@@ -18,7 +18,7 @@ from typing import List
 import numpy as np
 
 from n2v.sets import Box, Star
-from n2v.sets.image_star import ImageStar
+from n2v.nn.layer_ops._image_shape import apply_box_lift_star
 
 
 _GELU_X_MIN = -0.7517916  # x where GELU attains its global min
@@ -47,15 +47,10 @@ def gelu_box(input_boxes: List[Box]) -> List[Box]:
 
 
 def gelu_star_approx(input_stars: List[Star]) -> List[Star]:
-    """Box-lifted Star reach. See module docstring for soundness."""
-    output: List[Star] = []
-    for s in input_stars:
-        base = s.to_star() if isinstance(s, ImageStar) else s
-        lb, ub = base.estimate_ranges()
-        # Reuse the Box helper for the dip-aware bounding.
+    """Box-lifted Star reach, preserving ImageStar shape."""
+
+    def _box(lb: np.ndarray, ub: np.ndarray):
         box = gelu_box([Box(lb, ub)])[0]
-        out = Star.from_bounds(box.lb, box.ub)
-        if isinstance(s, ImageStar):
-            out = out.to_image_star(s.height, s.width, s.num_channels)
-        output.append(out)
-    return output
+        return box.lb, box.ub
+
+    return apply_box_lift_star(input_stars, _box)

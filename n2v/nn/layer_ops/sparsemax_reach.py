@@ -14,6 +14,7 @@ from typing import List
 import numpy as np
 
 from n2v.sets import Box, Star
+from n2v.nn.layer_ops._image_shape import apply_box_lift_star
 
 
 def sparsemax_box(input_boxes: List[Box]) -> List[Box]:
@@ -24,8 +25,9 @@ def sparsemax_box(input_boxes: List[Box]) -> List[Box]:
 
 
 def sparsemax_star_approx(input_stars: List[Star]) -> List[Star]:
-    out: List[Star] = []
-    for s in input_stars:
-        n = s.dim
-        out.append(Star.from_bounds(np.zeros((n, 1)), np.ones((n, 1))))
-    return out
+    """Each output entry lies in [0, 1]; preserves ImageStar shape."""
+
+    def _box(lb, ub):
+        return np.zeros_like(lb), np.ones_like(ub)
+
+    return apply_box_lift_star(input_stars, _box)

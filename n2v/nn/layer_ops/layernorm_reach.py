@@ -20,7 +20,7 @@ import numpy as np
 import torch.nn as nn
 
 from n2v.sets import Box, Star
-from n2v.sets.image_star import ImageStar
+from n2v.nn.layer_ops._image_shape import apply_box_lift_star
 from n2v.nn.layer_ops._norm_utils import affine_after_norm, normalised_interval
 
 
@@ -43,14 +43,9 @@ def layernorm_box(layer: nn.LayerNorm, input_boxes: List[Box]) -> List[Box]:
 
 def layernorm_star_approx(layer: nn.LayerNorm, input_stars: List[Star]) -> List[Star]:
     weight, bias, eps = _ln_params(layer)
-    output: List[Star] = []
-    for s in input_stars:
-        base = s.to_star() if isinstance(s, ImageStar) else s
-        lb, ub = base.estimate_ranges()
+
+    def _box(lb, ub):
         norm_lb, norm_ub = normalised_interval(lb, ub, eps=eps)
-        out_lb, out_ub = affine_after_norm(norm_lb, norm_ub, weight, bias)
-        out = Star.from_bounds(out_lb, out_ub)
-        if isinstance(s, ImageStar):
-            out = out.to_image_star(s.height, s.width, s.num_channels)
-        output.append(out)
-    return output
+        return affine_after_norm(norm_lb, norm_ub, weight, bias)
+
+    return apply_box_lift_star(input_stars, _box)

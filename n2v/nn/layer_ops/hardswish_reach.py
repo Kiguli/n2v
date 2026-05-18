@@ -12,7 +12,7 @@ from typing import List
 import numpy as np
 
 from n2v.sets import Box, Star
-from n2v.sets.image_star import ImageStar
+from n2v.nn.layer_ops._image_shape import apply_box_lift_star
 
 
 _HSWISH_X_MIN = -1.5
@@ -39,13 +39,10 @@ def hardswish_box(input_boxes: List[Box]) -> List[Box]:
 
 
 def hardswish_star_approx(input_stars: List[Star]) -> List[Star]:
-    output: List[Star] = []
-    for s in input_stars:
-        base = s.to_star() if isinstance(s, ImageStar) else s
-        lb, ub = base.estimate_ranges()
+    """Box-lifted Star reach, preserving ImageStar shape."""
+
+    def _box(lb: np.ndarray, ub: np.ndarray):
         box = hardswish_box([Box(lb, ub)])[0]
-        out = Star.from_bounds(box.lb, box.ub)
-        if isinstance(s, ImageStar):
-            out = out.to_image_star(s.height, s.width, s.num_channels)
-        output.append(out)
-    return output
+        return box.lb, box.ub
+
+    return apply_box_lift_star(input_stars, _box)
