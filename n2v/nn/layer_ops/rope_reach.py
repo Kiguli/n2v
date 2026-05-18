@@ -20,14 +20,28 @@ from n2v.nn.layer_ops import linear_reach
 
 
 def _rotation_matrix(layer, dim: int) -> np.ndarray:
-    """Construct the linear operator that RoPE applies to a (L*D) vector."""
+    """Construct the linear operator that RoPE applies to a (L*D) vector.
+
+    Raises ``ValueError`` if the flat input dim is not a multiple of
+    ``layer.dim``, or if the implied sequence length exceeds the
+    precomputed ``max_len``. Silently collapsing extra positions to
+    zero would be unsound — the concrete forward would either index
+    out of range or use unintended encodings.
+    """
     cos = layer.cos.detach().cpu().numpy().astype(np.float64)
     sin = layer.sin.detach().cpu().numpy().astype(np.float64)
     d = layer.dim
     l_max = cos.shape[0]
     if dim % d != 0:
-        return np.eye(dim)
-    L = min(dim // d, l_max)
+        raise ValueError(
+            f"RoPE flat input dim {dim} is not a multiple of layer.dim={d}."
+        )
+    L = dim // d
+    if L > l_max:
+        raise ValueError(
+            f"RoPE sequence length {L} exceeds layer.max_len={l_max}. The "
+            f"concrete forward has no encodings for positions beyond max_len."
+        )
     half = d // 2
 
     R = np.zeros((dim, dim), dtype=np.float64)

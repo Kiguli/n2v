@@ -29,21 +29,55 @@ def _make_translation(skip: np.ndarray) -> nn.Linear:
     return dummy
 
 
+def _surrogate_for(layer, input_dim: int) -> nn.Linear:
+    """Tile the per-feature skip across ``L = input_dim / skip_dim`` tokens.
+
+    ``AddWithFrozenSkip.forward`` broadcasts the skip across the last
+    axis, so an ``L*D``-flat input must be matched with a length-``L*D``
+    translation vector. Raises ``ValueError`` if ``input_dim`` is not a
+    multiple of the skip length.
+    """
+    skip = _skip_vec(layer)
+    if input_dim % skip.size != 0:
+        raise ValueError(
+            f"AddWithFrozenSkip flat input dim {input_dim} is not a multiple "
+            f"of the skip length {skip.size}. The concrete forward broadcasts "
+            f"the skip across the last axis."
+        )
+    L = input_dim // skip.size
+    return _make_translation(np.tile(skip, L))
+
+
 def add_with_frozen_skip_star(layer, input_stars: List[Star]) -> List[Star]:
-    return linear_reach.linear_star(_make_translation(_skip_vec(layer)), input_stars)
+    out: List[Star] = []
+    for s in input_stars:
+        out.extend(linear_reach.linear_star(_surrogate_for(layer, s.dim), [s]))
+    return out
 
 
 def add_with_frozen_skip_zono(layer, input_zonos: List[Zono]) -> List[Zono]:
-    return linear_reach.linear_zono(_make_translation(_skip_vec(layer)), input_zonos)
+    out: List[Zono] = []
+    for z in input_zonos:
+        out.extend(linear_reach.linear_zono(_surrogate_for(layer, z.dim), [z]))
+    return out
 
 
 def add_with_frozen_skip_box(layer, input_boxes: List[Box]) -> List[Box]:
-    return linear_reach.linear_box(_make_translation(_skip_vec(layer)), input_boxes)
+    out: List[Box] = []
+    for b in input_boxes:
+        out.extend(linear_reach.linear_box(_surrogate_for(layer, b.dim), [b]))
+    return out
 
 
 def add_with_frozen_skip_hexatope(layer, input_sets: List[Hexatope]) -> List[Hexatope]:
-    return linear_reach.linear_hexatope(_make_translation(_skip_vec(layer)), input_sets)
+    out: List[Hexatope] = []
+    for s in input_sets:
+        out.extend(linear_reach.linear_hexatope(_surrogate_for(layer, s.dim), [s]))
+    return out
 
 
 def add_with_frozen_skip_octatope(layer, input_sets: List[Octatope]) -> List[Octatope]:
-    return linear_reach.linear_octatope(_make_translation(_skip_vec(layer)), input_sets)
+    out: List[Octatope] = []
+    for s in input_sets:
+        out.extend(linear_reach.linear_octatope(_surrogate_for(layer, s.dim), [s]))
+    return out
