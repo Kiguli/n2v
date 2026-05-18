@@ -24,6 +24,7 @@ from typing import List
 import numpy as np
 
 from n2v.sets import Box, Star
+from n2v.sets.image_star import ImageStar
 
 
 def _row_attention_box(v_lb: np.ndarray, v_ub: np.ndarray, l_q: int) -> tuple[np.ndarray, np.ndarray]:
@@ -50,11 +51,23 @@ def softmax_attention_box(
 def softmax_attention_star_approx(
     q_star: List[Star], k_star: List[Star], v_star: List[Star], l_q: int, d_v: int
 ) -> List[Star]:
+    """Box-lifted Star reach.
+
+    Output shape ``(l_q, d_v)`` matches V's per-row layout. If V was an
+    ImageStar (e.g. when QKV come from a patch-embed pipeline) the
+    output is wrapped back as an ImageStar with the original ``(H, W,
+    C)`` so downstream image-aware layers see consistent metadata.
+    """
     out: List[Star] = []
     for q, k, v in zip(q_star, k_star, v_star):
-        v_lb, v_ub = v.estimate_ranges()
+        is_image = isinstance(v, ImageStar)
+        base_v = v.to_star() if is_image else v
+        v_lb, v_ub = base_v.estimate_ranges()
         v_lb = v_lb.reshape(-1, d_v)
         v_ub = v_ub.reshape(-1, d_v)
         out_lb, out_ub = _row_attention_box(v_lb, v_ub, l_q)
-        out.append(Star.from_bounds(out_lb.reshape(-1, 1), out_ub.reshape(-1, 1)))
+        new_star = Star.from_bounds(out_lb.reshape(-1, 1), out_ub.reshape(-1, 1))
+        if is_image:
+            new_star = new_star.to_image_star(v.height, v.width, v.num_channels)
+        out.append(new_star)
     return out

@@ -15,6 +15,7 @@ from typing import List
 import numpy as np
 
 from n2v.sets import Box, Star
+from n2v.sets.image_star import ImageStar
 
 
 def action_tokenizer_box(layer, input_boxes: List[Box]) -> List[Box]:
@@ -28,9 +29,18 @@ def action_tokenizer_box(layer, input_boxes: List[Box]) -> List[Box]:
 
 
 def action_tokenizer_star_approx(layer, input_stars: List[Star]) -> List[Star]:
+    """Integer-valued output bounded to [0, n_bins-1] per coordinate.
+
+    Output dimension equals input dimension, so ImageStar shape is
+    preserved if present.
+    """
     n_bins = int(layer.n_bins) - 1
     out: List[Star] = []
     for s in input_stars:
-        n = s.dim
-        out.append(Star.from_bounds(np.zeros((n, 1)), np.full((n, 1), float(n_bins))))
+        is_image = isinstance(s, ImageStar)
+        dim = s.to_star().dim if is_image else s.dim
+        new_star = Star.from_bounds(np.zeros((dim, 1)), np.full((dim, 1), float(n_bins)))
+        if is_image:
+            new_star = new_star.to_image_star(s.height, s.width, s.num_channels)
+        out.append(new_star)
     return out

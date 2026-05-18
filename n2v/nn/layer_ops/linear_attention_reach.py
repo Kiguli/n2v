@@ -16,6 +16,7 @@ from typing import List
 import numpy as np
 
 from n2v.sets import Box, Star
+from n2v.nn.layer_ops._image_shape import apply_box_lift_star
 
 
 def _kernel_bounds_box(box: Box) -> Box:
@@ -30,9 +31,10 @@ def linear_attention_box(input_boxes: List[Box]) -> List[Box]:
 
 
 def linear_attention_star_approx(input_stars: List[Star]) -> List[Star]:
-    out: List[Star] = []
-    for s in input_stars:
-        lb, ub = s.estimate_ranges()
+    """Box-lifted Star reach, preserving ImageStar shape."""
+
+    def _box(lb, ub):
         kb = _kernel_bounds_box(Box(lb, ub))
-        out.append(Star.from_bounds(kb.lb, kb.ub))
-    return out
+        return kb.lb, kb.ub
+
+    return apply_box_lift_star(input_stars, _box)

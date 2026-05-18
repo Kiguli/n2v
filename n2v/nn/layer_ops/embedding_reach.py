@@ -37,6 +37,13 @@ def embedding_box(layer, input_boxes: List[Box]) -> List[Box]:
 
 
 def embedding_star(layer, input_stars: List[Star]) -> List[Star]:
+    """Output dim = ``n_tokens * embed_dim``.
+
+    The input "set" carries token indices conceptually but for set
+    reachability we bound the *post-lookup* vector. ImageStar shape is
+    intentionally *not* preserved: the input is token-space, the output
+    is embedding-space, and dimensionality differs.
+    """
     lb, ub = _bounds_from_table(layer)
     out: List[Star] = []
     for s in input_stars:

@@ -12,6 +12,7 @@ from typing import List
 import numpy as np
 
 from n2v.sets import Box, Star, Zono
+from n2v.sets.image_star import ImageStar
 
 
 def relative_position_bias_table_box(layer, input_boxes: List[Box]) -> List[Box]:
@@ -23,10 +24,16 @@ def relative_position_bias_table_box(layer, input_boxes: List[Box]) -> List[Box]
 
 
 def relative_position_bias_table_star(layer, input_stars: List[Star]) -> List[Star]:
+    """Constant-set output. Preserves ImageStar shape if applicable."""
     out: List[Star] = []
     for s in input_stars:
-        val = np.zeros((s.dim, 1))
-        out.append(Star.from_bounds(val, val))
+        is_image = isinstance(s, ImageStar)
+        dim = s.to_star().dim if is_image else s.dim
+        val = np.zeros((dim, 1))
+        new_star = Star.from_bounds(val, val)
+        if is_image:
+            new_star = new_star.to_image_star(s.height, s.width, s.num_channels)
+        out.append(new_star)
     return out
 
 

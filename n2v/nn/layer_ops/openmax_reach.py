@@ -25,6 +25,12 @@ def openmax_box(layer, input_boxes: List[Box]) -> List[Box]:
 
 
 def openmax_star_approx(layer, input_stars: List[Star]) -> List[Star]:
+    """Output dim = num_classes + 1.
+
+    ImageStar shape is intentionally *not* preserved: OpenMax adds an
+    "unknown" class so output dimensionality differs from input.
+    Downstream layers must treat the result as a flat Star.
+    """
     out: List[Star] = []
     for s in input_stars:
         n = s.dim + 1
