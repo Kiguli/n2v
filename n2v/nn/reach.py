@@ -335,6 +335,16 @@ def _handle_graphmodule(
                     node_values[node.name] = current_sets
                     continue
 
+            # Multi-input wrapper modules (DagAdd, DagConcat, Concat2D, SFF,
+            # SoftmaxAttention) need set lists for every input port.
+            multi_result = _handle_multi_input_op(
+                module, node, node_values, set_type
+            )
+            if multi_result is not None:
+                node_values[node.name] = multi_result
+                current_sets = multi_result
+                continue
+
             # Standard PyTorch layer - use dispatcher
             if node.args and len(node.args) > 0:
                 first_arg = node.args[0]
@@ -451,6 +461,100 @@ def _handle_graphmodule(
                     current_sets = node_values[output_node.name]
 
     return current_sets
+
+
+def _handle_multi_input_op(
+    module: nn.Module,
+    node: fx.Node,
+    node_values: Dict[str, List],
+    set_type: Type,
+) -> Optional[List]:
+    """Dispatch reachability for layers that consume multiple input ports.
+
+    Walks ``node.args`` (and ``node.kwargs``) for every ``fx.Node`` reference,
+    looks up its previously-computed reachable sets, and forwards them to the
+    appropriate multi-input reach helper. Returns the output set list, or
+    ``None`` if the layer is not a recognised multi-input op (in which case
+    the caller falls through to the single-input dispatcher).
+
+    Supported layers (and the helper they call):
+      * ``n2v.nn.layers.DagAdd``                   → dag_add_reach.dag_add_box
+      * ``n2v.nn.layers.DagConcat``                → dag_concat_reach.dag_concat_box
+      * ``n2v.nn.layers.Concat2D``                 → concat2d_reach.concat2d_box
+      * ``n2v.nn.layers.SelectiveFeatureFusion``   → SFF_reach.selective_feature_fusion_box
+      * ``n2v.nn.layers.SoftmaxAttention``         → softmax_attention_reach.softmax_attention_{box,star_approx}
+    """
+    # Local imports keep top-of-file import cost low and break a potential cycle.
+    from n2v.nn.layers.dag_add import DagAdd
+    from n2v.nn.layers.dag_concat import DagConcat
+    from n2v.nn.layers.concat2d import Concat2D
+    from n2v.nn.layers.selective_feature_fusion import SelectiveFeatureFusion
+    from n2v.nn.layers.softmax_attention import SoftmaxAttention
+    from n2v.nn.layer_ops import (
+        dag_add_reach,
+        dag_concat_reach,
+        concat2d_reach,
+        selective_feature_fusion_reach,
+        softmax_attention_reach,
+    )
+
+    # Gather one set-stream per fx.Node argument (positional then keyword).
+    streams: List[List] = []
+    for arg in node.args:
+        if isinstance(arg, fx.Node) and arg.name in node_values:
+            streams.append(node_values[arg.name])
+    for _, kwarg in node.kwargs.items():
+        if isinstance(kwarg, fx.Node) and kwarg.name in node_values:
+            streams.append(node_values[kwarg.name])
+
+    if len(streams) < 2:
+        # Not a multi-input call; let the single-input dispatcher handle it.
+        return None
+
+    primary, extras = streams[0], streams[1:]
+
+    if isinstance(module, DagAdd):
+        if set_type is Box:
+            return dag_add_reach.dag_add_box(primary, extras)
+        return None  # Box only per nnVLA catalog.
+
+    if isinstance(module, DagConcat):
+        if set_type is Box:
+            return dag_concat_reach.dag_concat_box(primary, extras)
+        return None
+
+    if isinstance(module, Concat2D):
+        if set_type is Box:
+            return concat2d_reach.concat2d_box(primary, extras)
+        return None
+
+    if isinstance(module, SelectiveFeatureFusion):
+        if set_type is Box:
+            return selective_feature_fusion_reach.selective_feature_fusion_box(
+                primary, extras
+            )
+        return None
+
+    if isinstance(module, SoftmaxAttention):
+        if len(streams) < 3:
+            return None  # Need Q, K, V.
+        q_stream, k_stream, v_stream = streams[0], streams[1], streams[2]
+        # Heuristic: infer l_q and d_v from the V stream's first set.
+        first_v = v_stream[0]
+        v_dim = first_v.dim if hasattr(first_v, "dim") else first_v.lb.size
+        d_v = int(getattr(module, "d_head", 0) or 0) or 1
+        l_q = max(1, v_dim // d_v)
+        if set_type is Box:
+            return softmax_attention_reach.softmax_attention_box(
+                q_stream, k_stream, v_stream, l_q=l_q, d_v=d_v
+            )
+        if set_type is Star or set_type is ImageStar:
+            return softmax_attention_reach.softmax_attention_star_approx(
+                q_stream, k_stream, v_stream, l_q=l_q, d_v=d_v
+            )
+        return None
+
+    return None
 
 
 def _get_parameter(graph_module: fx.GraphModule, node: Any) -> torch.Tensor:
