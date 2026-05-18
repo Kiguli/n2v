@@ -11,7 +11,7 @@ from typing import List
 
 import numpy as np
 
-from n2v.sets import Box, Star, Zono
+from n2v.sets import Box, Hexatope, Octatope, Star, Zono
 from n2v.sets.image_star import ImageStar
 
 
@@ -43,4 +43,22 @@ def relative_position_bias_table_zono(layer, input_zonos: List[Zono]) -> List[Zo
         c = np.zeros((z.dim, 1))
         V = np.zeros((z.dim, 1))
         out.append(Zono(c, V))
+    return out
+
+
+def relative_position_bias_table_hexatope(layer, input_sets: List[Hexatope]) -> List[Hexatope]:
+    """Constant set: a degenerate Hexatope at zero."""
+    out: List[Hexatope] = []
+    for s in input_sets:
+        z = np.zeros((s.dim, 1))
+        out.append(Hexatope.from_bounds(z, z))
+    return out
+
+
+def relative_position_bias_table_octatope(layer, input_sets: List[Octatope]) -> List[Octatope]:
+    """Constant set: a degenerate Octatope at zero."""
+    out: List[Octatope] = []
+    for s in input_sets:
+        z = np.zeros((s.dim, 1))
+        out.append(Octatope.from_bounds(z, z))
     return out

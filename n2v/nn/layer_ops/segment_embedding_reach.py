@@ -15,7 +15,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from n2v.sets import Box, Star, Zono
+from n2v.sets import Box, Hexatope, Octatope, Star, Zono
 from n2v.nn.layer_ops import linear_reach
 
 
@@ -64,4 +64,28 @@ def segment_embedding_zono(layer, input_zonos: List[Zono], segment_ids: Optional
         if bias.size != z.dim:
             bias = np.zeros(z.dim, dtype=np.float64)
         out.extend(linear_reach.linear_zono(_make_translation(bias), [z]))
+    return out
+
+
+def segment_embedding_hexatope(
+    layer, input_sets: List[Hexatope], segment_ids: Optional[torch.Tensor] = None
+) -> List[Hexatope]:
+    out: List[Hexatope] = []
+    for s in input_sets:
+        bias = _emb_translation(layer, s.dim, segment_ids)
+        if bias.size != s.dim:
+            bias = np.zeros(s.dim, dtype=np.float64)
+        out.extend(linear_reach.linear_hexatope(_make_translation(bias), [s]))
+    return out
+
+
+def segment_embedding_octatope(
+    layer, input_sets: List[Octatope], segment_ids: Optional[torch.Tensor] = None
+) -> List[Octatope]:
+    out: List[Octatope] = []
+    for s in input_sets:
+        bias = _emb_translation(layer, s.dim, segment_ids)
+        if bias.size != s.dim:
+            bias = np.zeros(s.dim, dtype=np.float64)
+        out.extend(linear_reach.linear_octatope(_make_translation(bias), [s]))
     return out

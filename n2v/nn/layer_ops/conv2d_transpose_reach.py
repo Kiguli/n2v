@@ -19,7 +19,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from n2v.sets import Box, Star, Zono
+from n2v.sets import Box, Hexatope, Octatope, Star, Zono
 from n2v.nn.layer_ops import linear_reach
 
 
@@ -66,4 +66,20 @@ def conv2d_transpose_zono(layer, input_zonos: List[Zono]) -> List[Zono]:
     for z in input_zonos:
         shape = _input_shape_from_layer(layer, z.dim)
         out.extend(linear_reach.linear_zono(_explicit_linear(layer, shape), [z]))
+    return out
+
+
+def conv2d_transpose_hexatope(layer, input_sets: List[Hexatope]) -> List[Hexatope]:
+    out: List[Hexatope] = []
+    for s in input_sets:
+        shape = _input_shape_from_layer(layer, s.dim)
+        out.extend(linear_reach.linear_hexatope(_explicit_linear(layer, shape), [s]))
+    return out
+
+
+def conv2d_transpose_octatope(layer, input_sets: List[Octatope]) -> List[Octatope]:
+    out: List[Octatope] = []
+    for s in input_sets:
+        shape = _input_shape_from_layer(layer, s.dim)
+        out.extend(linear_reach.linear_octatope(_explicit_linear(layer, shape), [s]))
     return out

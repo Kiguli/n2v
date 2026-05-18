@@ -715,6 +715,12 @@ def _reach_layer_hexatope(layer: nn.Module, input_sets: List, method: str, **kwa
         return positional_encoding_reach.positional_encoding_hexatope(layer, input_sets)
     elif isinstance(layer, _CausalMask):
         return causal_mask_reach.causal_mask_hexatope(layer, input_sets)
+    elif isinstance(layer, nn.ConvTranspose2d):
+        return conv2d_transpose_reach.conv2d_transpose_hexatope(layer, input_sets)
+    elif isinstance(layer, (_RelAttnBiasT5, _RelPosBiasTable)):
+        return relative_attention_bias_t5_reach.relative_attention_bias_t5_hexatope(
+            layer, input_sets
+        )
 
     elif isinstance(layer, (nn.Identity, nn.Dropout, nn.Dropout2d, nn.Dropout3d)):
         return input_sets
@@ -783,6 +789,12 @@ def _reach_layer_octatope(layer: nn.Module, input_sets: List, method: str, **kwa
         return positional_encoding_reach.positional_encoding_octatope(layer, input_sets)
     elif isinstance(layer, _CausalMask):
         return causal_mask_reach.causal_mask_octatope(layer, input_sets)
+    elif isinstance(layer, nn.ConvTranspose2d):
+        return conv2d_transpose_reach.conv2d_transpose_octatope(layer, input_sets)
+    elif isinstance(layer, (_RelAttnBiasT5, _RelPosBiasTable)):
+        return relative_attention_bias_t5_reach.relative_attention_bias_t5_octatope(
+            layer, input_sets
+        )
 
     elif isinstance(layer, (nn.Identity, nn.Dropout, nn.Dropout2d, nn.Dropout3d)):
         return input_sets
