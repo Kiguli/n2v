@@ -154,6 +154,7 @@ result = net.reach(
 
 ```python
 import numpy as np
+import torch
 import torch.nn as nn
 from n2v.probabilistic import verify
 from n2v.sets import Box

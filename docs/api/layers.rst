@@ -3,13 +3,34 @@ Layer Wrappers
 
 ``n2v.nn.layers`` provides thin ``nn.Module`` wrappers for layer types
 not present in ``torch.nn`` (RMSNorm, GRN, RoPE, CausalMask,
-LayerScale, DropPath, SoftmaxAttention, ...). These wrappers exist so
-that users can build models in PyTorch using the same names nnVLA
-exposes and n2v's :mod:`~n2v.nn.layer_ops.dispatcher` will route to the
-correct reachability implementation by ``isinstance``.
+LayerScale, DropPath, SoftmaxAttention, ...). The wrappers exist so
+users can build models in PyTorch with the same names this port
+follows.
+
+Most single-input wrappers are detected by the dispatcher via
+``isinstance`` and route through :func:`~n2v.nn.layer_ops.dispatcher.reach_layer`:
+``RMSNorm``, ``GRN``, ``LayerScale``, ``DropPath``, ``CausalMask``,
+``RoPE``, ``CLSToken``, ``DistillationToken``, ``TiedLinear``,
+``OpenMax``, ``ActionHead``, ``ActionTokenizer``, ``Pooler``,
+``ProjectionHead``, ``PositionalEncoding``,
+``RelativeAttentionBiasT5``, ``RelativePositionBiasTable``,
+``AddWithFrozenSkip``, ``ConcatWithFrozenSkip``.
+
+Multi-input wrappers (``DagAdd``, ``DagConcat``, ``Concat2D``,
+``SelectiveFeatureFusion``, ``SoftmaxAttention``) are detected by the
+*graph-level* multi-input dispatcher in :mod:`n2v.nn.reach`. They are
+not invoked through the single-input ``reach_layer`` path; calling
+``reach_layer`` on one of these raises ``NotImplementedError``.
+
+Wrappers that are intentionally NOT routed by the dispatcher and should
+appear only inside a :class:`torch.fx` trace decomposed into primitives
+(``Linear`` + ``Conv2d`` + activation + ...): ``MixFFN``,
+``ParallelResidual``, ``PatchEmbed``, ``OverlapPatchEmbed``. These are
+verified through their decomposed primitives, not as opaque modules.
 
 Importing a wrapper does **not** affect dispatch on its own —
-registration is done by the dispatcher's ``isinstance`` chains.
+dispatcher routing is via the ``isinstance`` chains and graph-level
+multi-input hook.
 
 .. automodule:: n2v.nn.layers
    :members:

@@ -33,6 +33,7 @@ The verification script:
 
 .. code-block:: python
 
+   import torch
    import n2v
    from n2v.sets import Star
 

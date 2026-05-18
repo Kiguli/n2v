@@ -8,14 +8,24 @@ ImageStar), Zono (and ImageZono), Hexatope, Octatope.
 Legend
 ------
 
-- ✅ — implemented and routed through the dispatcher
+- ✅ — implemented as a per-set-type helper *and* routed by the
+  single-input dispatcher (a model authored with the corresponding
+  ``nn.Module`` runs end-to-end through
+  :func:`~n2v.nn.NeuralNetwork.reach`).
+- 🔗 — implemented as a helper that is invoked via the *graph-level
+  multi-input dispatcher* in :mod:`n2v.nn.reach._handle_multi_input_op`
+  (DagAdd, DagConcat, Concat2D, SelectiveFeatureFusion,
+  SoftmaxAttention). End-to-end dispatch is currently wired for
+  ``Box`` only; ``Star`` and others go through the helpers directly.
+- 🛠 — implemented as a helper function only; not currently routed by
+  the dispatcher. Useful when invoked explicitly by user code.
 - ✨ — implemented as a *predicate-preserving* Star approximation that
   carries the input Star's predicates through, then adds per-feature
-  slack predicates for the non-affine portion of the layer
+  slack predicates for the non-affine portion of the layer.
 - ⚠ — implemented as a sound *box-lifted* Star approximation (looser
   than the predicate-preserving variants; tightening tracked as
-  follow-up work)
-- — — not soundly applicable to this layer type
+  follow-up work).
+- — — not soundly applicable to this layer type.
 
 Pre-existing Layers
 -------------------
@@ -69,11 +79,11 @@ LayerScale                  ✅    ✅    ✅    ✅        ✅
 DropPath                    ✅    ✅    ✅    —         —
 AddWithFrozenSkip           ✅    ✅    ✅    ✅        ✅
 ConcatWithFrozenSkip        ✅    ✅    ✅    —         —
-DagAdd (multi-input)        ✅    —     —     —         —
-DagConcat (multi-input)     ✅    —     —     —         —
-Concat2D (multi-input)      ✅    —     —     —         —
-SelectiveFeatureFusion      ✅    —     —     —         —
-MixFFN                      via dispatcher (recursive sub-module pass)
+DagAdd (multi-input)        🔗    —     —     —         —
+DagConcat (multi-input)     🔗    —     —     —         —
+Concat2D (multi-input)      🔗    —     —     —         —
+SelectiveFeatureFusion      🔗    —     —     —         —
+MixFFN                      raise (decompose via fx)
 ==========================  ====  ====  ====  ========  ========
 
 Phase 3 — Attention
@@ -82,14 +92,14 @@ Phase 3 — Attention
 ==========================  ====  ====  ====  ========  ========
 Layer                       Box   Star  Zono  Hexatope  Octatope
 ==========================  ====  ====  ====  ========  ========
-SoftmaxAttention            ✅    ⚠     —     —         —
-Sparsemax                   ✅    ⚠     —     —         —
-LinearAttention             ✅    ⚠     —     —         —
-SparseAttention             ✅    ⚠     —     —         —
-CrossAttention              ✅    ⚠     —     —         —
-GroupedQueryAttention       ✅    ⚠     —     —         —
-MultiQueryAttention         ✅    ⚠     —     —         —
-EfficientAttentionSR        via dispatcher (decomposed)
+SoftmaxAttention            🔗    🔗⚠   —     —         —
+Sparsemax                   🛠    🛠⚠   —     —         —
+LinearAttention             🛠    🛠⚠   —     —         —
+SparseAttention             🛠    🛠⚠   —     —         —
+CrossAttention              🛠    🛠⚠   —     —         —
+GroupedQueryAttention       🛠    🛠⚠   —     —         —
+MultiQueryAttention         🛠    🛠⚠   —     —         —
+EfficientAttentionSR        raise (decompose via fx)
 CausalMask                  ✅    ✅    ✅    ✅        ✅
 RelativeAttentionBiasT5     ✅    ✅    ✅    ✅        ✅
 RelativePositionBiasTable   ✅    ✅    ✅    ✅        ✅

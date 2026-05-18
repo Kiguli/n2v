@@ -1,10 +1,21 @@
 DAG & Skip
 ==========
 
-Multi-input and skip-connection layers. ``DagAdd`` / ``DagConcat`` /
-``Concat2D`` / ``SelectiveFeatureFusion`` accept multiple input streams
-via the dispatcher's ``extras`` parameter; the others (LayerScale,
-DropPath, FrozenSkip helpers, MixFFN) are single-input.
+Multi-input and skip-connection layers.
+
+The single-input ports (``LayerScale``, ``DropPath``, the FrozenSkip
+helpers) route through :func:`~n2v.nn.layer_ops.dispatcher.reach_layer`
+as standard layers.
+
+The multi-input ports (``DagAdd``, ``DagConcat``, ``Concat2D``,
+``SelectiveFeatureFusion``) take a primary stream plus an ``extras``
+list of additional input-port streams. End-to-end dispatch of these
+wrappers through :class:`~n2v.nn.NeuralNetwork.reach` requires the
+graph-level multi-input hook in :mod:`n2v.nn.reach._handle_multi_input_op`,
+which is wired up for ``Box`` but has open corner cases for ``Star``
+under certain fx traces — see the PR description for the current
+status. The per-op helpers documented below operate correctly when
+invoked directly with the right stream layout.
 
 LayerScale & DropPath
 ---------------------
