@@ -12,7 +12,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from n2v.sets import Box, Star, Zono
+from n2v.sets import Box, Hexatope, Octatope, Star, Zono
 from n2v.nn.layer_ops import linear_reach
 
 
@@ -39,3 +39,11 @@ def add_with_frozen_skip_zono(layer, input_zonos: List[Zono]) -> List[Zono]:
 
 def add_with_frozen_skip_box(layer, input_boxes: List[Box]) -> List[Box]:
     return linear_reach.linear_box(_make_translation(_skip_vec(layer)), input_boxes)
+
+
+def add_with_frozen_skip_hexatope(layer, input_sets: List[Hexatope]) -> List[Hexatope]:
+    return linear_reach.linear_hexatope(_make_translation(_skip_vec(layer)), input_sets)
+
+
+def add_with_frozen_skip_octatope(layer, input_sets: List[Octatope]) -> List[Octatope]:
+    return linear_reach.linear_octatope(_make_translation(_skip_vec(layer)), input_sets)

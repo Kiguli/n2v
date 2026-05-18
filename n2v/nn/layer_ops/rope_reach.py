@@ -15,7 +15,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from n2v.sets import Box, Star, Zono
+from n2v.sets import Box, Hexatope, Octatope, Star, Zono
 from n2v.nn.layer_ops import linear_reach
 
 
@@ -75,4 +75,20 @@ def rope_zono(layer, input_zonos: List[Zono]) -> List[Zono]:
     for z in input_zonos:
         R = _rotation_matrix(layer, z.dim)
         out.extend(linear_reach.linear_zono(_make_rotation_linear(R), [z]))
+    return out
+
+
+def rope_hexatope(layer, input_sets: List[Hexatope]) -> List[Hexatope]:
+    out: List[Hexatope] = []
+    for s in input_sets:
+        R = _rotation_matrix(layer, s.dim)
+        out.extend(linear_reach.linear_hexatope(_make_rotation_linear(R), [s]))
+    return out
+
+
+def rope_octatope(layer, input_sets: List[Octatope]) -> List[Octatope]:
+    out: List[Octatope] = []
+    for s in input_sets:
+        R = _rotation_matrix(layer, s.dim)
+        out.extend(linear_reach.linear_octatope(_make_rotation_linear(R), [s]))
     return out

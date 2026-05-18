@@ -13,7 +13,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from n2v.sets import Box, Star, Zono
+from n2v.sets import Box, Hexatope, Octatope, Star, Zono
 from n2v.nn.layer_ops import linear_reach
 
 
@@ -42,3 +42,13 @@ def layerscale_zono(layer, input_zonos: List[Zono]) -> List[Zono]:
 def layerscale_box(layer, input_boxes: List[Box]) -> List[Box]:
     g = _gamma(layer)
     return linear_reach.linear_box(_make_diag_linear(g), input_boxes)
+
+
+def layerscale_hexatope(layer, input_sets: List[Hexatope]) -> List[Hexatope]:
+    g = _gamma(layer)
+    return linear_reach.linear_hexatope(_make_diag_linear(g), input_sets)
+
+
+def layerscale_octatope(layer, input_sets: List[Octatope]) -> List[Octatope]:
+    g = _gamma(layer)
+    return linear_reach.linear_octatope(_make_diag_linear(g), input_sets)

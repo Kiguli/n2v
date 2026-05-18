@@ -671,6 +671,18 @@ def _reach_layer_hexatope(layer: nn.Module, input_sets: List, method: str, **kwa
     elif isinstance(layer, _ActionHead):
         return action_head_reach.action_head_hexatope(layer, input_sets)
 
+    # Elementwise-affine wrappers — route via linear_reach surrogates.
+    elif isinstance(layer, _LayerScale):
+        return layerscale_reach.layerscale_hexatope(layer, input_sets)
+    elif isinstance(layer, _AddWithFrozenSkip):
+        return add_with_frozen_skip_reach.add_with_frozen_skip_hexatope(layer, input_sets)
+    elif isinstance(layer, _RoPE):
+        return rope_reach.rope_hexatope(layer, input_sets)
+    elif isinstance(layer, _PositionalEncoding):
+        return positional_encoding_reach.positional_encoding_hexatope(layer, input_sets)
+    elif isinstance(layer, _CausalMask):
+        return causal_mask_reach.causal_mask_hexatope(layer, input_sets)
+
     elif isinstance(layer, (nn.Identity, nn.Dropout, nn.Dropout2d, nn.Dropout3d)):
         return input_sets
 
@@ -718,6 +730,18 @@ def _reach_layer_octatope(layer: nn.Module, input_sets: List, method: str, **kwa
         return tied_linear_reach.tied_linear_octatope(layer, input_sets)
     elif isinstance(layer, _ActionHead):
         return action_head_reach.action_head_octatope(layer, input_sets)
+
+    # Elementwise-affine wrappers — route via linear_reach surrogates.
+    elif isinstance(layer, _LayerScale):
+        return layerscale_reach.layerscale_octatope(layer, input_sets)
+    elif isinstance(layer, _AddWithFrozenSkip):
+        return add_with_frozen_skip_reach.add_with_frozen_skip_octatope(layer, input_sets)
+    elif isinstance(layer, _RoPE):
+        return rope_reach.rope_octatope(layer, input_sets)
+    elif isinstance(layer, _PositionalEncoding):
+        return positional_encoding_reach.positional_encoding_octatope(layer, input_sets)
+    elif isinstance(layer, _CausalMask):
+        return causal_mask_reach.causal_mask_octatope(layer, input_sets)
 
     elif isinstance(layer, (nn.Identity, nn.Dropout, nn.Dropout2d, nn.Dropout3d)):
         return input_sets

@@ -14,7 +14,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from n2v.sets import Box, Star, Zono
+from n2v.sets import Box, Hexatope, Octatope, Star, Zono
 from n2v.nn.layer_ops import linear_reach
 
 
@@ -56,4 +56,20 @@ def positional_encoding_zono(layer, input_zonos: List[Zono]) -> List[Zono]:
     for z in input_zonos:
         bias = _pe_vec(layer, z.dim)
         out.extend(linear_reach.linear_zono(_make_translation(bias), [z]))
+    return out
+
+
+def positional_encoding_hexatope(layer, input_sets: List[Hexatope]) -> List[Hexatope]:
+    out: List[Hexatope] = []
+    for s in input_sets:
+        bias = _pe_vec(layer, s.dim)
+        out.extend(linear_reach.linear_hexatope(_make_translation(bias), [s]))
+    return out
+
+
+def positional_encoding_octatope(layer, input_sets: List[Octatope]) -> List[Octatope]:
+    out: List[Octatope] = []
+    for s in input_sets:
+        bias = _pe_vec(layer, s.dim)
+        out.extend(linear_reach.linear_octatope(_make_translation(bias), [s]))
     return out
