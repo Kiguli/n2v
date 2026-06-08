@@ -84,3 +84,7 @@ examples/FlowConformal/paper/tables/outputs/
 #     python -m examples.FlowConformal.experiments.exp4_scaling.networks
 # Originally tracked (~117 MB); untracked at Phase 19.
 examples/FlowConformal/experiments/exp4_scaling/networks_onnx/
+
+# Compiled VNN-LIB caches produced by external verifiers (αβ-CROWN /
+# NeuralSAT). Regenerated on demand from the .vnnlib specs; not tracked.
+*.vnnlib.compiled
