@@ -160,7 +160,10 @@ def reach_pytorch_model(
     # Trace non-GraphModule models with torch.fx
     if not isinstance(model, fx.GraphModule):
         try:
-            model = torch.fx.symbolic_trace(model)
+            # T1-7: use N2VTracer so wrappers stay as leaves -- see
+            # n2v/nn/_tracer.py for rationale.
+            from n2v.nn._tracer import symbolic_trace as _n2v_symbolic_trace
+            model = _n2v_symbolic_trace(model)
         except Exception as e:
             raise TypeError(
                 f"n2v requires models to be traceable by torch.fx. "
@@ -384,8 +387,79 @@ def _handle_graphmodule(
                     )
 
         elif node.op == 'call_function':
+            # T1-6 (ViT enable): handle elementwise binary primitives that
+            # appear in transformer residuals + positional-embedding adds.
+            # ``operator.add`` covers ``x + sublayer(x)`` (set + set) and
+            # ``x + self.pos_embed`` (set + constant). The set-arithmetic
+            # helper ``_add_sets`` already handles set + set.
+            if node.target in (operator.add, torch.add):
+                arg0, arg1 = node.args[0], node.args[1]
+
+                def _resolve_set_or_const(arg):
+                    if isinstance(arg, fx.Node):
+                        if arg.op == 'get_attr':
+                            return ('const',
+                                    _get_parameter(graph_module, arg)
+                                    .detach().cpu().numpy())
+                        if arg.name in node_values:
+                            return ('sets', node_values[arg.name])
+                    if isinstance(arg, (int, float)):
+                        return ('const', np.array([float(arg)]))
+                    if isinstance(arg, torch.Tensor):
+                        return ('const', arg.detach().cpu().numpy())
+                    raise NotImplementedError(
+                        f"call_function {node.target}: cannot resolve arg "
+                        f"{arg!r} (type {type(arg).__name__})."
+                    )
+
+                kind_a, val_a = _resolve_set_or_const(arg0)
+                kind_b, val_b = _resolve_set_or_const(arg1)
+
+                if kind_a == 'sets' and kind_b == 'sets':
+                    result = _add_sets(val_a, val_b, '+')
+                else:
+                    # set + constant: translate the set's centre by the
+                    # constant; generators unchanged.
+                    if kind_a == 'sets':
+                        sets_arg, const_arg = val_a, val_b
+                    else:
+                        sets_arg, const_arg = val_b, val_a
+                    const_flat = np.asarray(const_arg, dtype=np.float64).reshape(-1, 1)
+                    result = []
+                    for s in sets_arg:
+                        if isinstance(s, ImageStar):
+                            new_V = s.V.copy()
+                            new_V[:, 0:1] = new_V[:, 0:1] + const_flat
+                            result.append(ImageStar(
+                                new_V, s.C, s.d, s.predicate_lb, s.predicate_ub,
+                                s.height, s.width, s.num_channels,
+                            ))
+                        elif isinstance(s, Star):
+                            new_V = s.V.copy()
+                            new_V[:, 0:1] = new_V[:, 0:1] + const_flat
+                            result.append(Star(
+                                new_V, s.C, s.d, s.predicate_lb, s.predicate_ub,
+                            ))
+                        elif isinstance(s, ImageZono):
+                            new_c = s.c + const_flat
+                            result.append(ImageZono(
+                                new_c, s.V, s.height, s.width, s.num_channels,
+                            ))
+                        elif isinstance(s, Zono):
+                            result.append(Zono(s.c + const_flat, s.V))
+                        elif isinstance(s, Box):
+                            result.append(Box(s.lb + const_flat, s.ub + const_flat))
+                        else:
+                            raise NotImplementedError(
+                                f"call_function operator.add: set + constant "
+                                f"not implemented for {type(s).__name__}."
+                            )
+
+                node_values[node.name] = result
+                current_sets = result
+
             # Handle operator.getitem for multi-output ops (e.g., Split)
-            if node.target is operator.getitem:
+            elif node.target is operator.getitem:
                 args = node.args
                 if len(args) >= 2:
                     src_node = args[0]
@@ -398,17 +472,101 @@ def _handle_graphmodule(
                             node_values[node.name] = src_val[index]
                             current_sets = src_val[index]
                         else:
-                            # T0-1: tensor-slice getitem (e.g. Pooler's
-                            # ``x[:, 0]``) is not yet implemented. A proper
-                            # ``_slice_set`` dispatch lands in Commit 10
-                            # (T1-6). Until then, fail loud rather than
-                            # silently drop the index.
-                            raise NotImplementedError(
-                                f"call_function operator.getitem '{node.name}': "
-                                f"non-Split source (index={index!r}). Tensor "
-                                f"slicing of reach sets is not yet wired; see "
-                                f"PR12_FIX_LIST T1-6 (Commit 10)."
-                            )
+                            # T1-6 (ViT enable): tensor-slice getitem.
+                            # The audit's central case is Pooler's
+                            # ``x[:, 0]`` which extracts the CLS token from
+                            # a flat (L*D,) Zono/Star. Implementation:
+                            # interpret the tuple of slices in the
+                            # ``(token, feature)`` layout the upstream
+                            # PatchEmbed produces and pick out the indexed
+                            # rows of c / V.
+                            result = []
+                            if not isinstance(index, tuple):
+                                raise NotImplementedError(
+                                    f"operator.getitem '{node.name}': "
+                                    f"non-tuple index {index!r} not yet "
+                                    f"supported (see PR12_FIX_LIST T1-6)."
+                                )
+                            # Drop the batch axis (slice(None)) at index[0].
+                            # Remaining indices select tokens / features.
+                            inner_idx = index[1:]
+                            for s in src_val:
+                                # We assume the flat layout produced by
+                                # PatchEmbed is token-major: row i selects
+                                # token h, feature c with i = token*D + c.
+                                # For x[:, 0] (single token): take the
+                                # first D rows.
+                                if len(inner_idx) == 1 and isinstance(
+                                        inner_idx[0], int):
+                                    token_idx = inner_idx[0]
+                                    # Need D to know the feature count;
+                                    # infer from the set's total dim and
+                                    # the upstream layer's seq length.
+                                    # We pull D from a graph-level hint if
+                                    # available; otherwise raise.
+                                    # Pull L from the GraphModule (set at
+                                    # tracing time) or from a kwargs hint.
+                                    L = getattr(
+                                        graph_module, '_n2v_n_tokens', None,
+                                    ) or kwargs.get('n_tokens')
+                                    if L is None:
+                                        # Last resort: infer from model
+                                        # introspection -- the root module
+                                        # of an n2v-traced model often
+                                        # exposes an ``n_tokens`` attr on
+                                        # its wrapper (e.g. our MinimalViT).
+                                        root = getattr(
+                                            graph_module, 'root', None,
+                                        )
+                                        if root is not None:
+                                            L = getattr(root, 'n_tokens', None)
+                                    if L is None or s.dim % L != 0:
+                                        raise NotImplementedError(
+                                            f"operator.getitem '{node.name}': "
+                                            f"cannot infer token count to "
+                                            f"slice flat reach set of dim "
+                                            f"{s.dim}; pass ``n_tokens=L`` "
+                                            f"as a kwarg to reach() or set "
+                                            f"``model.n_tokens``."
+                                        )
+                                    D = s.dim // L
+                                    row_start = token_idx * D
+                                    row_end = row_start + D
+                                    if isinstance(s, ImageStar):
+                                        new_V = s.V[row_start:row_end]
+                                        result.append(Star(
+                                            new_V, s.C, s.d,
+                                            s.predicate_lb, s.predicate_ub,
+                                        ))
+                                    elif isinstance(s, Star):
+                                        new_V = s.V[row_start:row_end]
+                                        result.append(Star(
+                                            new_V, s.C, s.d,
+                                            s.predicate_lb, s.predicate_ub,
+                                        ))
+                                    elif isinstance(s, (ImageZono, Zono)):
+                                        new_c = s.c[row_start:row_end]
+                                        new_V = s.V[row_start:row_end]
+                                        result.append(Zono(new_c, new_V))
+                                    elif isinstance(s, Box):
+                                        result.append(Box(
+                                            s.lb[row_start:row_end],
+                                            s.ub[row_start:row_end],
+                                        ))
+                                    else:
+                                        raise NotImplementedError(
+                                            f"operator.getitem on "
+                                            f"{type(s).__name__} not yet "
+                                            f"supported."
+                                        )
+                                else:
+                                    raise NotImplementedError(
+                                        f"operator.getitem '{node.name}': "
+                                        f"slice {inner_idx!r} not yet "
+                                        f"supported (see T1-6)."
+                                    )
+                            node_values[node.name] = result
+                            current_sets = result
             else:
                 # Try to convert function to module equivalent
                 equiv_module = _function_node_to_module(node)
@@ -620,6 +778,28 @@ def _handle_multi_input_op(
             return softmax_attention_reach.softmax_attention_star_approx(
                 q_stream, k_stream, v_stream, l_q=l_q, d_v=d_v
             )
+        if set_type is Zono or set_type is ImageZono:
+            # T1-7 (ViT enable): Zono path is box-lifted -- same
+            # over-approximation as the Star path's box lift today,
+            # but routed via the Zono machinery. Reduce each stream to
+            # its IBP box, run softmax_attention_box, return as Zono.
+            def _to_box_list(set_list):
+                box_list = []
+                for s in set_list:
+                    lb, ub = s.get_bounds()
+                    box_list.append(Box(
+                        np.asarray(lb).reshape(-1, 1),
+                        np.asarray(ub).reshape(-1, 1),
+                    ))
+                return box_list
+
+            q_b = _to_box_list(q_stream)
+            k_b = _to_box_list(k_stream)
+            v_b = _to_box_list(v_stream)
+            box_out = softmax_attention_reach.softmax_attention_box(
+                q_b, k_b, v_b, l_q=l_q, d_v=d_v,
+            )
+            return [Zono.from_bounds(b.lb, b.ub) for b in box_out]
         return None
 
     return None
@@ -2094,7 +2274,9 @@ def _reach_hybrid(model: nn.Module, input_set: Any, **kwargs: Any) -> List:
     # Trace the model if needed
     if not isinstance(model, fx.GraphModule):
         try:
-            model = torch.fx.symbolic_trace(model)
+            # T1-7: see n2v/nn/_tracer.py.
+            from n2v.nn._tracer import symbolic_trace as _n2v_symbolic_trace
+            model = _n2v_symbolic_trace(model)
         except Exception as e:
             raise TypeError(
                 f"n2v requires models to be traceable by torch.fx. "
