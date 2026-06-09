@@ -15,7 +15,12 @@ from n2v.nn.layer_ops._image_shape import apply_box_lift_star
 
 
 _SILU_X_MIN = -1.2785          # x where SiLU attains its global min
-_SILU_F_MIN = -0.2784645        # SiLU(_SILU_X_MIN)
+_SILU_F_MIN = -0.2784646        # SiLU(_SILU_X_MIN). Rounded AWAY from zero
+                                # from the true minimum -0.27846454 so the
+                                # box floor is a true lower bound. The prior
+                                # -0.2784645 was rounded TOWARD zero by
+                                # ~4.3e-8, making the box floor strictly
+                                # above the true min (T0-3 / audit C5).
 
 
 def _silu(x: np.ndarray) -> np.ndarray:

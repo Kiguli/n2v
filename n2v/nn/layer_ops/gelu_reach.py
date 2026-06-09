@@ -1,18 +1,25 @@
 """GELU activation reachability.
 
-GELU(x) = 0.5 * x * (1 + erf(x / sqrt(2)))
+Two approximation modes are supported, matching ``nn.GELU(approximate=...)``:
 
-Non-monotone (small dip near x = -0.75). Box reach uses the global
-minimum at the inflection ``x_min ≈ -0.7517916``; Star reach uses a
-sound linear over-approximation that contains the function on the
-neuron's bound interval.
+* ``approximate='none'`` (default) -- the exact ``erf``-based form
+  ``GELU(x) = 0.5 * x * (1 + erf(x / sqrt(2)))``. Global minimum
+  ``f ≈ -0.169971207`` at ``x ≈ -0.7517918``.
+* ``approximate='tanh'`` -- the GPT-2 / HF default form
+  ``GELU(x) = 0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))``.
+  Global minimum ``f ≈ -0.170041`` at ``x ≈ -0.7517``.
 
-Coverage matches nnVLA: Box (IBP), Star (CROWN-style approx).
+Both forms are smooth and non-monotone (small dip near ``x = -0.75``). Box reach
+clamps the lower bound to the global ``F_MIN`` constant whenever the input
+interval brackets the dip; Star reach lifts the per-element Box bound into a
+fresh predicate. Floor constants are rounded **away from zero** so the Box
+floor is a true lower bound (T0-3, audit C5: the previous constants were
+rounded toward zero by ~1.2e-6 and produced a tiny under-approximation).
 """
 
 from __future__ import annotations
 
-from math import erf, sqrt
+from math import erf, sqrt, tanh
 from typing import List
 
 import numpy as np
@@ -21,36 +28,91 @@ from n2v.sets import Box, Star
 from n2v.nn.layer_ops._image_shape import apply_box_lift_star
 
 
-_GELU_X_MIN = -0.7517916  # x where GELU attains its global min
-_GELU_F_MIN = -0.16997    # GELU(_GELU_X_MIN) ≈ -0.169966...
+# Exact erf-form constants.
+_GELU_X_MIN = -0.7517916    # x where erf-GELU attains its global min
+_GELU_F_MIN = -0.169972     # erf-GELU(x_min). Rounded AWAY from zero from
+                            # the true minimum -0.169971207 so the box
+                            # floor is a sound lower bound (T0-3 / C5).
+
+# Tanh-approximation constants. The tanh form's minimum is slightly LOWER
+# than the erf form's, so a model authored with ``nn.GELU(approximate='tanh')``
+# (GPT-2 and many HF transformers) needs its own floor.
+_GELU_TANH_X_MIN = -0.7517   # x where tanh-GELU attains its global min
+_GELU_TANH_F_MIN = -0.170041  # tanh-GELU(x_min). Rounded AWAY from zero.
+
+_TANH_SQRT_2_OVER_PI = sqrt(2.0 / np.pi)
 
 
 def _gelu(x: np.ndarray) -> np.ndarray:
+    """Exact erf-form GELU forward."""
     x = np.asarray(x, dtype=np.float64)
     return 0.5 * x * (1.0 + np.vectorize(erf)(x / sqrt(2.0)))
 
 
-def gelu_box(input_boxes: List[Box]) -> List[Box]:
-    """Sound Box reach for GELU, accounting for the small left-side dip."""
+def _gelu_tanh(x: np.ndarray) -> np.ndarray:
+    """Tanh-approximation GELU forward (GPT-2 / HuggingFace default)."""
+    x = np.asarray(x, dtype=np.float64)
+    inner = _TANH_SQRT_2_OVER_PI * (x + 0.044715 * x ** 3)
+    return 0.5 * x * (1.0 + np.vectorize(tanh)(inner))
+
+
+def _gelu_box_impl(
+    input_boxes: List[Box],
+    forward,
+    x_min: float,
+    f_min: float,
+) -> List[Box]:
     out: List[Box] = []
     for b in input_boxes:
         lb = b.lb.flatten()
         ub = b.ub.flatten()
-        fl = _gelu(lb)
-        fu = _gelu(ub)
-        # If interval brackets the global min, lower bound is f_min.
-        contains_min = (lb <= _GELU_X_MIN) & (ub >= _GELU_X_MIN)
-        out_lb = np.where(contains_min, _GELU_F_MIN, np.minimum(fl, fu))
+        fl = forward(lb)
+        fu = forward(ub)
+        contains_min = (lb <= x_min) & (ub >= x_min)
+        out_lb = np.where(contains_min, f_min, np.minimum(fl, fu))
         out_ub = np.maximum(fl, fu)
         out.append(Box(out_lb.reshape(-1, 1), out_ub.reshape(-1, 1)))
     return out
 
 
+def gelu_box(input_boxes: List[Box]) -> List[Box]:
+    """Sound Box reach for the exact (erf) GELU."""
+    return _gelu_box_impl(input_boxes, _gelu, _GELU_X_MIN, _GELU_F_MIN)
+
+
+def gelu_tanh_box(input_boxes: List[Box]) -> List[Box]:
+    """Sound Box reach for the tanh-approximation GELU (GPT-2 form).
+
+    T0-3 (audit C5): nn.GELU(approximate='tanh') was previously routed to
+    ``gelu_box`` which uses the erf-form ``F_MIN = -0.16997``. The tanh form
+    dips lower (~-0.170041) so the erf floor was strictly ABOVE the true
+    minimum, producing an unsound (under-approximating) box reach that
+    excluded true outputs near the dip.
+    """
+    return _gelu_box_impl(
+        input_boxes, _gelu_tanh, _GELU_TANH_X_MIN, _GELU_TANH_F_MIN,
+    )
+
+
 def gelu_star_approx(input_stars: List[Star]) -> List[Star]:
-    """Box-lifted Star reach, preserving ImageStar shape."""
+    """Box-lifted Star reach for the exact (erf) GELU, preserving ImageStar shape."""
 
     def _box(lb: np.ndarray, ub: np.ndarray):
         box = gelu_box([Box(lb, ub)])[0]
+        return box.lb, box.ub
+
+    return apply_box_lift_star(input_stars, _box)
+
+
+def gelu_tanh_star_approx(input_stars: List[Star]) -> List[Star]:
+    """Box-lifted Star reach for the tanh-approximation GELU.
+
+    Star path is box-lifted today; a CROWN-style linear relaxation would be a
+    tighter follow-up (see PR12_FIX_LIST T4 polish).
+    """
+
+    def _box(lb: np.ndarray, ub: np.ndarray):
+        box = gelu_tanh_box([Box(lb, ub)])[0]
         return box.lb, box.ub
 
     return apply_box_lift_star(input_stars, _box)

@@ -69,6 +69,41 @@ def test_gelu_box(small_box):
     _activation_box_passes(gelu_reach.gelu_box, nn.GELU(), small_box)
 
 
+def test_gelu_tanh_box(small_box):
+    """T0-3 (audit C5): the tanh-approximation GELU dips lower than the erf
+    form (~-0.170041 vs ~-0.169971). gelu_tanh_box must be a sound box reach
+    for nn.GELU(approximate='tanh') -- the GPT-2 / HF default. With the
+    previous erf-form routing the box floor was strictly above the tanh-form
+    minimum and true outputs at x = -0.7517 fell BELOW the reach floor.
+    """
+    _activation_box_passes(
+        gelu_reach.gelu_tanh_box, nn.GELU(approximate="tanh"), small_box,
+    )
+
+
+def test_gelu_tanh_dip_is_contained():
+    """Box reach must contain the true tanh-GELU minimum at x ≈ -0.7517.
+
+    Regression: pre-fix the dispatcher routed nn.GELU(approximate='tanh')
+    to gelu_box (erf form) whose F_MIN -0.16997 lies ABOVE the tanh dip
+    -0.170041, so a true output exactly at the dip was excluded from the
+    reach.
+    """
+    box = Box(np.array([[-2.0]]), np.array([[1.0]]))
+    out = gelu_reach.gelu_tanh_box([box])
+    assert len(out) == 1
+    assert out[0].lb.flatten()[0] <= -0.170041 + 1e-9, (
+        f"gelu_tanh_box lower bound {out[0].lb.flatten()[0]} is above the "
+        f"true tanh-GELU minimum -0.170041 -- box reach is unsound."
+    )
+    # Cross-check that the erf box would have been unsound for tanh.
+    erf_box = gelu_reach.gelu_box([box])
+    assert erf_box[0].lb.flatten()[0] >= -0.169972 - 1e-9
+    # Box floor for erf form is strictly above the tanh dip, demonstrating
+    # the unsoundness window the dispatcher branch closes.
+    assert erf_box[0].lb.flatten()[0] > -0.170041
+
+
 def test_quickgelu_box(small_box):
     quickgelu = lambda x: x * torch.sigmoid(1.702 * x)
     _activation_box_passes(quickgelu_reach.quickgelu_box, quickgelu, small_box)

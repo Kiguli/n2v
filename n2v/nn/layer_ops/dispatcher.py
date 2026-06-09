@@ -311,7 +311,19 @@ def _reach_layer_star(layer: nn.Module, input_sets: List, method: str, **kwargs)
     elif isinstance(layer, nn.ELU):
         return elu_reach.elu_star_approx(input_sets, alpha=float(layer.alpha))
     elif isinstance(layer, nn.GELU):
-        return gelu_reach.gelu_star_approx(input_sets)
+        # T0-3 (audit C5): branch on approximate=tanh vs erf. The previous
+        # unconditional erf-form routing was unsound for nn.GELU(approximate=
+        # 'tanh') -- the GPT-2 / HF default -- because the tanh dip falls
+        # below the erf floor.
+        mode = getattr(layer, "approximate", "none")
+        if mode == "tanh":
+            return gelu_reach.gelu_tanh_star_approx(input_sets)
+        elif mode == "none":
+            return gelu_reach.gelu_star_approx(input_sets)
+        else:
+            raise NotImplementedError(
+                f"nn.GELU(approximate={mode!r}) is not supported by reach."
+            )
     elif isinstance(layer, nn.SiLU):
         return silu_reach.silu_star_approx(input_sets)
     elif isinstance(layer, nn.Hardswish):
@@ -572,7 +584,16 @@ def _reach_layer_box(layer: nn.Module, input_sets: List, method: str, **kwargs) 
     elif isinstance(layer, nn.ELU):
         return elu_reach.elu_box(input_sets, alpha=float(layer.alpha))
     elif isinstance(layer, nn.GELU):
-        return gelu_reach.gelu_box(input_sets)
+        # T0-3 (audit C5): branch on approximate=tanh vs erf.
+        mode = getattr(layer, "approximate", "none")
+        if mode == "tanh":
+            return gelu_reach.gelu_tanh_box(input_sets)
+        elif mode == "none":
+            return gelu_reach.gelu_box(input_sets)
+        else:
+            raise NotImplementedError(
+                f"nn.GELU(approximate={mode!r}) is not supported by reach."
+            )
     elif isinstance(layer, nn.SiLU):
         return silu_reach.silu_box(input_sets)
     elif isinstance(layer, nn.Hardswish):
