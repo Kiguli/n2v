@@ -39,11 +39,19 @@ FUNCTION_TO_MODULE_CLS: dict[type, type[nn.Module]] = {
     F.relu: nn.ReLU,
     torch.relu: nn.ReLU,
     F.relu6: nn.ReLU6,
-    F.elu: nn.ELU,
+    # NOTE (audit T0-2 / C6): do NOT add ``F.elu`` or ``F.leaky_relu`` here.
+    # ``_function_node_to_module`` consults this dict FIRST. The dict value
+    # is constructed via ``cls()`` with no kwargs, so a custom
+    # ``negative_slope`` / ``alpha`` on the call_function node would be
+    # silently dropped, producing an unsound (under-approximating) reach
+    # that excludes the true output (counterexample: ``F.leaky_relu(x,
+    # negative_slope=0.5)`` returns reach ``[-0.02, -0.005]`` while the
+    # true output is ``[-1.0, -0.25]``). The dedicated parameter-extraction
+    # branches in ``_function_node_to_module`` below correctly read the
+    # kwargs and must remain the only path for these two functions.
     F.gelu: nn.GELU,
     F.silu: nn.SiLU,
     F.hardswish: nn.Hardswish,
-    F.leaky_relu: nn.LeakyReLU,
     torch.sigmoid: nn.Sigmoid,
     F.sigmoid: nn.Sigmoid,
     torch.tanh: nn.Tanh,
