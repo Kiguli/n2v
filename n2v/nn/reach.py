@@ -358,6 +358,22 @@ def _handle_graphmodule(
                     output_sets = reach_layer(module, input_sets_op, method, **layer_kwargs)
                     node_values[node.name] = output_sets
                     current_sets = output_sets
+                else:
+                    # T0-1 (audit C1): fail loud rather than silently drop the
+                    # layer. Previously this branch had no ``else``, so when an
+                    # upstream node was skipped (e.g. an unhandled call_function
+                    # or call_method primitive that left no entry in
+                    # ``node_values``), every downstream call_module was silently
+                    # dropped and ``reach()`` returned the unchanged input box.
+                    # That silently inverted the verifier's SAT/UNSAT verdict.
+                    raise NotImplementedError(
+                        f"call_module '{node.target}' ({module_type}): input "
+                        f"'{getattr(first_arg, 'name', first_arg)!s}' has no "
+                        f"computed reach set. An upstream node (likely a "
+                        f"call_function or call_method primitive) was skipped "
+                        f"without raising. The reach graph is incomplete; add "
+                        f"a handler for the upstream primitive."
+                    )
 
         elif node.op == 'call_function':
             # Handle operator.getitem for multi-output ops (e.g., Split)
@@ -373,6 +389,18 @@ def _handle_graphmodule(
                                 and isinstance(src_val[0], list)):
                             node_values[node.name] = src_val[index]
                             current_sets = src_val[index]
+                        else:
+                            # T0-1: tensor-slice getitem (e.g. Pooler's
+                            # ``x[:, 0]``) is not yet implemented. A proper
+                            # ``_slice_set`` dispatch lands in Commit 10
+                            # (T1-6). Until then, fail loud rather than
+                            # silently drop the index.
+                            raise NotImplementedError(
+                                f"call_function operator.getitem '{node.name}': "
+                                f"non-Split source (index={index!r}). Tensor "
+                                f"slicing of reach sets is not yet wired; see "
+                                f"PR12_FIX_LIST T1-6 (Commit 10)."
+                            )
             else:
                 # Try to convert function to module equivalent
                 equiv_module = _function_node_to_module(node)
@@ -397,10 +425,18 @@ def _handle_graphmodule(
                     node_values[node.name] = output_sets
                     current_sets = output_sets
 
-                elif verbose:
-                    logger.debug(
-                        f'  Skipping call_function: '
-                        f'{node.target}'
+                else:
+                    # T0-1 (audit C1 downstream): primitive call_function
+                    # nodes without a module equivalent (operator.add /
+                    # operator.mul / torch.cat / torch.matmul / F.softmax /
+                    # torch.split / torch.chunk) are wired in Commit 10
+                    # (T1-6). Until then, fail loud so the missing handler
+                    # is named in the traceback rather than silently
+                    # dropping the layer.
+                    raise NotImplementedError(
+                        f"call_function '{node.target}' is not handled by "
+                        f"_handle_graphmodule. Add a primitive handler "
+                        f"(see PR12_FIX_LIST T1-6, Commit 10)."
                     )
 
         elif node.op == 'call_method':
@@ -450,8 +486,19 @@ def _handle_graphmodule(
                 node_values[node.name] = result_sets
                 current_sets = result_sets
 
-            elif verbose:
-                logger.debug(f'  Skipping call_method: {method_name}')
+            else:
+                # T0-1 (audit C1 downstream): unhandled call_method
+                # (transpose / permute / unsqueeze / squeeze / chunk /
+                # other tensor methods) is wired in Commit 10 (T1-6).
+                # Until then, fail loud rather than log-and-continue, so
+                # downstream call_module nodes don't read stale
+                # ``current_sets`` and silently verify a different
+                # function than the model computes.
+                raise NotImplementedError(
+                    f"call_method '{method_name}' is not handled by "
+                    f"_handle_graphmodule. Add a handler (see "
+                    f"PR12_FIX_LIST T1-6, Commit 10)."
+                )
 
         elif node.op == 'output':
             # Output node - extract final result
