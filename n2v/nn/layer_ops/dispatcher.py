@@ -361,8 +361,19 @@ def _reach_layer_star(layer: nn.Module, input_sets: List, method: str, **kwargs)
     # ----- Phase 3: single-input attention helpers -----
     elif isinstance(layer, _CausalMask):
         return causal_mask_reach.causal_mask_star(layer, input_sets)
-    elif isinstance(layer, (_RelAttnBiasT5, _RelPosBiasTable)):
+    elif isinstance(layer, _RelAttnBiasT5):
         return relative_attention_bias_t5_reach.relative_attention_bias_t5_star(layer, input_sets)
+    elif isinstance(layer, _RelPosBiasTable):
+        # T1-2 (audit high): RelPosBiasTable was previously grouped with
+        # RelAttnBiasT5 and routed to the T5 helper, which reads
+        # layer.relative_attention_bias.weight -- an attribute the Swin
+        # table does not have (its parameter is `bias_table`). Resulting
+        # in AttributeError end-to-end on every set type. The dedicated
+        # relative_position_bias_table_reach module existed but was never
+        # invoked. Now split.
+        return relative_position_bias_table_reach.relative_position_bias_table_star(
+            layer, input_sets,
+        )
     elif isinstance(layer, _SoftmaxAttention):
         raise NotImplementedError(
             "SoftmaxAttention requires multi-input (Q, K, V) dispatch via n2v.nn.reach."
@@ -497,8 +508,12 @@ def _reach_layer_zono(layer: nn.Module, input_sets: List, method: str, **kwargs)
     # ----- Phase 3: single-input attention helpers (zono coverage limited) -----
     elif isinstance(layer, _CausalMask):
         return causal_mask_reach.causal_mask_zono(layer, input_sets)
-    elif isinstance(layer, (_RelAttnBiasT5, _RelPosBiasTable)):
+    elif isinstance(layer, _RelAttnBiasT5):
         return relative_attention_bias_t5_reach.relative_attention_bias_t5_zono(layer, input_sets)
+    elif isinstance(layer, _RelPosBiasTable):
+        return relative_position_bias_table_reach.relative_position_bias_table_zono(
+            layer, input_sets,
+        )
 
     # ----- Phase 4: embeddings & tokens -----
     elif isinstance(layer, nn.Embedding):
@@ -649,8 +664,12 @@ def _reach_layer_box(layer: nn.Module, input_sets: List, method: str, **kwargs) 
     # ----- Phase 3: single-input attention helpers -----
     elif isinstance(layer, _CausalMask):
         return causal_mask_reach.causal_mask_box(layer, input_sets)
-    elif isinstance(layer, (_RelAttnBiasT5, _RelPosBiasTable)):
+    elif isinstance(layer, _RelAttnBiasT5):
         return relative_attention_bias_t5_reach.relative_attention_bias_t5_box(layer, input_sets)
+    elif isinstance(layer, _RelPosBiasTable):
+        return relative_position_bias_table_reach.relative_position_bias_table_box(
+            layer, input_sets,
+        )
     elif isinstance(layer, _SoftmaxAttention):
         raise NotImplementedError(
             "SoftmaxAttention requires multi-input (Q, K, V) dispatch via n2v.nn.reach."
@@ -761,9 +780,13 @@ def _reach_layer_hexatope(layer: nn.Module, input_sets: List, method: str, **kwa
         return causal_mask_reach.causal_mask_hexatope(layer, input_sets)
     elif isinstance(layer, nn.ConvTranspose2d):
         return conv2d_transpose_reach.conv2d_transpose_hexatope(layer, input_sets)
-    elif isinstance(layer, (_RelAttnBiasT5, _RelPosBiasTable)):
+    elif isinstance(layer, _RelAttnBiasT5):
         return relative_attention_bias_t5_reach.relative_attention_bias_t5_hexatope(
             layer, input_sets
+        )
+    elif isinstance(layer, _RelPosBiasTable):
+        return relative_position_bias_table_reach.relative_position_bias_table_hexatope(
+            layer, input_sets,
         )
 
     elif isinstance(layer, (nn.Identity, nn.Dropout, nn.Dropout2d, nn.Dropout3d)):
@@ -839,9 +862,13 @@ def _reach_layer_octatope(layer: nn.Module, input_sets: List, method: str, **kwa
         return causal_mask_reach.causal_mask_octatope(layer, input_sets)
     elif isinstance(layer, nn.ConvTranspose2d):
         return conv2d_transpose_reach.conv2d_transpose_octatope(layer, input_sets)
-    elif isinstance(layer, (_RelAttnBiasT5, _RelPosBiasTable)):
+    elif isinstance(layer, _RelAttnBiasT5):
         return relative_attention_bias_t5_reach.relative_attention_bias_t5_octatope(
             layer, input_sets
+        )
+    elif isinstance(layer, _RelPosBiasTable):
+        return relative_position_bias_table_reach.relative_position_bias_table_octatope(
+            layer, input_sets,
         )
 
     elif isinstance(layer, (nn.Identity, nn.Dropout, nn.Dropout2d, nn.Dropout3d)):

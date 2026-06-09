@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 import torch
 
-from n2v.sets import Box, Star
+from n2v.sets import Box, Star, Zono
 from n2v.nn.layer_ops import (
     softmax_attention_reach,
     causal_mask_reach,
@@ -14,6 +14,7 @@ from n2v.nn.layer_ops import (
     relative_attention_bias_t5_reach,
     relative_position_bias_table_reach,
     linear_attention_reach,
+    dispatcher,
 )
 from n2v.nn.layers import RelativeAttentionBiasT5, RelativePositionBiasTable
 
@@ -82,3 +83,48 @@ def test_relative_position_bias_table_box():
     t = layer.bias_table.detach().cpu().numpy()
     np.testing.assert_allclose(out[0].lb, np.full((4, 1), float(t.min())))
     np.testing.assert_allclose(out[0].ub, np.full((4, 1), float(t.max())))
+
+
+def test_relative_position_bias_table_round_trip_through_dispatcher():
+    """T1-2 (audit high): RelativePositionBiasTable was grouped with
+    RelativeAttentionBiasT5 in a tuple-isinstance branch and routed to the
+    T5 reach helper, which reads layer.relative_attention_bias.weight --
+    the Swin table stores its parameter as `bias_table`. End-to-end
+    dispatch raised AttributeError. This test pins the dispatcher route to
+    the dedicated relative_position_bias_table_reach module for Box, Star,
+    and Zono.
+    """
+    layer = RelativePositionBiasTable(window_size=2, n_heads=2)
+    layer.eval()
+    with torch.no_grad():
+        layer.bias_table.data.uniform_(-0.3, 0.3)
+
+    for ctor in (
+        lambda: Box(np.zeros((4, 1)), np.ones((4, 1))),
+        lambda: Star.from_bounds(np.zeros((4, 1)), np.ones((4, 1))),
+    ):
+        s = ctor()
+        out = dispatcher.reach_layer(layer, [s], "approx")
+        assert len(out) == 1
+        assert out[0].dim == 4
+
+    # Zono separately because Zono construction needs generators.
+    z = Zono(
+        np.zeros((4, 1)),
+        np.eye(4).astype(np.float64).reshape(4, 4, 1),
+    )
+    out = dispatcher.reach_layer(layer, [z], "approx")
+    assert len(out) == 1
+    assert out[0].dim == 4
+
+
+def test_relative_attention_bias_t5_round_trip_through_dispatcher():
+    """T1-2 sibling test: the T5 bias still routes correctly to its own
+    helper after the split. Catches accidental routing to the Swin helper.
+    """
+    layer = RelativeAttentionBiasT5(num_buckets=4, n_heads=2)
+    layer.eval()
+    b = Box(np.zeros((4, 1)), np.ones((4, 1)))
+    out = dispatcher.reach_layer(layer, [b], "approx")
+    assert len(out) == 1
+    assert out[0].dim == 4
