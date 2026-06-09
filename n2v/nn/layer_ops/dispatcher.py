@@ -101,6 +101,13 @@ from n2v.nn.layers.cls_token import CLSToken as _CLSToken
 from n2v.nn.layers.distillation_token import DistillationToken as _DistillationToken
 from n2v.nn.layers.positional_encoding import PositionalEncoding as _PositionalEncoding
 from n2v.nn.layers.rope import RoPE as _RoPE
+# T1-3 (audit high): wrapper for SegmentEmbedding. The reach helpers in
+# segment_embedding_reach existed pre-PR12 but the wrapper class was never
+# imported into dispatcher.py, so any model containing a SegmentEmbedding
+# raised NotImplementedError end-to-end. Now wired via isinstance branches
+# in all five _reach_layer_* methods below. segment_ids is read from
+# **kwargs (forwarded by the fx call_module / NeuralNetwork.reach path).
+from n2v.nn.layers.segment_embedding import SegmentEmbedding as _SegmentEmbedding
 
 # Phase 5 ports: conv variants & specialty
 from . import tied_linear_reach
@@ -372,6 +379,10 @@ def _reach_layer_star(layer: nn.Module, input_sets: List, method: str, **kwargs)
         return cls_token_reach.cls_token_star(layer, input_sets)
     elif isinstance(layer, _DistillationToken):
         return distillation_token_reach.distillation_token_star(layer, input_sets)
+    elif isinstance(layer, _SegmentEmbedding):
+        return segment_embedding_reach.segment_embedding_star(
+            layer, input_sets, segment_ids=kwargs.get("segment_ids"),
+        )
 
     # ----- Phase 5: conv variants & specialty -----
     elif isinstance(layer, _TiedLinear):
@@ -500,6 +511,10 @@ def _reach_layer_zono(layer: nn.Module, input_sets: List, method: str, **kwargs)
         return cls_token_reach.cls_token_zono(layer, input_sets)
     elif isinstance(layer, _DistillationToken):
         return distillation_token_reach.distillation_token_zono(layer, input_sets)
+    elif isinstance(layer, _SegmentEmbedding):
+        return segment_embedding_reach.segment_embedding_zono(
+            layer, input_sets, segment_ids=kwargs.get("segment_ids"),
+        )
 
     # ----- Phase 5: conv variants & specialty -----
     elif isinstance(layer, _TiedLinear):
@@ -652,6 +667,10 @@ def _reach_layer_box(layer: nn.Module, input_sets: List, method: str, **kwargs) 
         return cls_token_reach.cls_token_box(layer, input_sets)
     elif isinstance(layer, _DistillationToken):
         return distillation_token_reach.distillation_token_box(layer, input_sets)
+    elif isinstance(layer, _SegmentEmbedding):
+        return segment_embedding_reach.segment_embedding_box(
+            layer, input_sets, segment_ids=kwargs.get("segment_ids"),
+        )
 
     # ----- Phase 5: conv variants & specialty -----
     elif isinstance(layer, _TiedLinear):
@@ -734,6 +753,10 @@ def _reach_layer_hexatope(layer: nn.Module, input_sets: List, method: str, **kwa
         return rope_reach.rope_hexatope(layer, input_sets)
     elif isinstance(layer, _PositionalEncoding):
         return positional_encoding_reach.positional_encoding_hexatope(layer, input_sets)
+    elif isinstance(layer, _SegmentEmbedding):
+        return segment_embedding_reach.segment_embedding_hexatope(
+            layer, input_sets, segment_ids=kwargs.get("segment_ids"),
+        )
     elif isinstance(layer, _CausalMask):
         return causal_mask_reach.causal_mask_hexatope(layer, input_sets)
     elif isinstance(layer, nn.ConvTranspose2d):
@@ -808,6 +831,10 @@ def _reach_layer_octatope(layer: nn.Module, input_sets: List, method: str, **kwa
         return rope_reach.rope_octatope(layer, input_sets)
     elif isinstance(layer, _PositionalEncoding):
         return positional_encoding_reach.positional_encoding_octatope(layer, input_sets)
+    elif isinstance(layer, _SegmentEmbedding):
+        return segment_embedding_reach.segment_embedding_octatope(
+            layer, input_sets, segment_ids=kwargs.get("segment_ids"),
+        )
     elif isinstance(layer, _CausalMask):
         return causal_mask_reach.causal_mask_octatope(layer, input_sets)
     elif isinstance(layer, nn.ConvTranspose2d):
