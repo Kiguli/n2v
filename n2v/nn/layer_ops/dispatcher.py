@@ -108,6 +108,10 @@ from n2v.nn.layers.rope import RoPE as _RoPE
 # in all five _reach_layer_* methods below. segment_ids is read from
 # **kwargs (forwarded by the fx call_module / NeuralNetwork.reach path).
 from n2v.nn.layers.segment_embedding import SegmentEmbedding as _SegmentEmbedding
+# T1-7 (ViT enable): PatchEmbed routed as fx leaf via N2VTracer; needs a
+# dedicated dispatcher branch since it composes Conv2d + flatten + transpose.
+from n2v.nn.layers.patch_embed import PatchEmbed as _PatchEmbed
+from . import patch_embed_reach
 
 # Phase 5 ports: conv variants & specialty
 from . import tied_linear_reach
@@ -394,6 +398,8 @@ def _reach_layer_star(layer: nn.Module, input_sets: List, method: str, **kwargs)
         return segment_embedding_reach.segment_embedding_star(
             layer, input_sets, segment_ids=kwargs.get("segment_ids"),
         )
+    elif isinstance(layer, _PatchEmbed):
+        return patch_embed_reach.patch_embed_star(layer, input_sets, **kwargs)
 
     # ----- Phase 5: conv variants & specialty -----
     elif isinstance(layer, _TiedLinear):
@@ -530,6 +536,22 @@ def _reach_layer_zono(layer: nn.Module, input_sets: List, method: str, **kwargs)
         return segment_embedding_reach.segment_embedding_zono(
             layer, input_sets, segment_ids=kwargs.get("segment_ids"),
         )
+    elif isinstance(layer, _PatchEmbed):
+        return patch_embed_reach.patch_embed_zono(layer, input_sets)
+
+    # ----- Phase 1 Zono routes (box-lifted, sound but loose; ViT enable) -----
+    elif isinstance(layer, nn.LayerNorm):
+        return layernorm_reach.layernorm_zono(layer, input_sets)
+    elif isinstance(layer, nn.GELU):
+        mode = getattr(layer, "approximate", "none")
+        if mode == "tanh":
+            return gelu_reach.gelu_tanh_zono(input_sets)
+        elif mode == "none":
+            return gelu_reach.gelu_zono(input_sets)
+        else:
+            raise NotImplementedError(
+                f"nn.GELU(approximate={mode!r}) is not supported by reach."
+            )
 
     # ----- Phase 5: conv variants & specialty -----
     elif isinstance(layer, _TiedLinear):
@@ -690,6 +712,8 @@ def _reach_layer_box(layer: nn.Module, input_sets: List, method: str, **kwargs) 
         return segment_embedding_reach.segment_embedding_box(
             layer, input_sets, segment_ids=kwargs.get("segment_ids"),
         )
+    elif isinstance(layer, _PatchEmbed):
+        return patch_embed_reach.patch_embed_box(layer, input_sets)
 
     # ----- Phase 5: conv variants & specialty -----
     elif isinstance(layer, _TiedLinear):

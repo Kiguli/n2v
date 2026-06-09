@@ -2,12 +2,48 @@
 Linear layer reachability operations.
 
 Works directly with PyTorch nn.Linear layers.
+
+T1-7 (ViT enable): nn.Linear in a transformer is applied PER TOKEN to a
+``(B, L, D_in)`` sequence, producing ``(B, L, D_out)``. After
+``PatchEmbed`` and ``CLSToken`` the reach set is flat with dim
+``L * D_in``. ``layer.weight`` is ``(D_out, D_in)`` -- not
+``(L * D_out, L * D_in)`` -- so the existing ``zono.affine_map(W, b)``
+call raises a shape mismatch. We block-tile the weight (and bias) to
+``(L * D_out, L * D_in)`` (Kronecker product with the identity) when the
+input flat dim is a multiple of ``layer.in_features`` greater than 1.
 """
 
 import torch.nn as nn
 import numpy as np
-from typing import List
+from typing import List, Tuple
 from n2v.sets import Star, Zono, Box, Hexatope, Octatope
+
+
+def _maybe_block_tile_linear(
+    W: np.ndarray, b: np.ndarray | None, input_flat_dim: int,
+) -> Tuple[np.ndarray, np.ndarray | None, int]:
+    """If ``input_flat_dim > layer.in_features`` and divides cleanly, return
+    a block-diagonal expansion that applies ``W`` to each ``in_features``
+    chunk independently. Otherwise return ``W, b`` unchanged.
+
+    Returns ``(W_tiled, b_tiled, L)`` where ``L`` is the number of token
+    blocks (1 when no tiling is needed).
+    """
+    in_features = W.shape[1]
+    if input_flat_dim == in_features:
+        return W, b, 1
+    if input_flat_dim % in_features != 0:
+        # Caller will raise a clear shape error.
+        return W, b, 0
+    L = input_flat_dim // in_features
+    # Kronecker product I_L (X) W gives a block-diagonal layout that
+    # applies W independently to each of the L token chunks.
+    W_tiled = np.kron(np.eye(L, dtype=W.dtype), W)
+    if b is not None:
+        b_tiled = np.tile(b.reshape(-1), L)
+    else:
+        b_tiled = None
+    return W_tiled, b_tiled, L
 
 
 def linear_star(layer: nn.Linear, input_stars: List[Star]) -> List[Star]:
@@ -26,11 +62,12 @@ def linear_star(layer: nn.Linear, input_stars: List[Star]) -> List[Star]:
 
     output_stars = []
     for star in input_stars:
-        if b is not None:
-            b_reshaped = b.reshape(-1, 1)
-            output_star = star.affine_map(W, b_reshaped)
+        W_use, b_use, _ = _maybe_block_tile_linear(W, b, star.dim)
+        if b_use is not None:
+            b_reshaped = b_use.reshape(-1, 1)
+            output_star = star.affine_map(W_use, b_reshaped)
         else:
-            output_star = star.affine_map(W)
+            output_star = star.affine_map(W_use)
         output_stars.append(output_star)
 
     return output_stars
@@ -52,11 +89,12 @@ def linear_zono(layer: nn.Linear, input_zonos: List[Zono]) -> List[Zono]:
 
     output_zonos = []
     for zono in input_zonos:
-        if b is not None:
-            b_reshaped = b.reshape(-1, 1)
-            output_zono = zono.affine_map(W, b_reshaped)
+        W_use, b_use, _ = _maybe_block_tile_linear(W, b, zono.dim)
+        if b_use is not None:
+            b_reshaped = b_use.reshape(-1, 1)
+            output_zono = zono.affine_map(W_use, b_reshaped)
         else:
-            output_zono = zono.affine_map(W)
+            output_zono = zono.affine_map(W_use)
         output_zonos.append(output_zono)
 
     return output_zonos

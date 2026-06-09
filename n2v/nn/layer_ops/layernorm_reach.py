@@ -74,6 +74,32 @@ def _broadcast_affine(weight: np.ndarray | None, bias: np.ndarray | None, L: int
     return w, b
 
 
+def layernorm_zono(layer: nn.LayerNorm, input_zonos):
+    """Sound (box-lifted) Zono reach for LayerNorm.
+
+    Reduces each input Zono to its IBP envelope via ``get_bounds``,
+    applies ``layernorm_box``, and re-wraps as a Zono via
+    ``Zono.from_bounds``. This is loose (the predicate-preserving Star
+    path is tighter, when it lands at T1-1 / Commit 7), but it is sound
+    and lets ViT-style models complete reach end-to-end on the Zono path.
+    """
+    from n2v.sets import Zono
+    from n2v.sets.image_zono import ImageZono
+
+    out: List = []
+    for z in input_zonos:
+        lb, ub = z.get_bounds()
+        box_in = Box(np.asarray(lb).reshape(-1, 1), np.asarray(ub).reshape(-1, 1))
+        box_out = layernorm_box(layer, [box_in])[0]
+        new_zono = Zono.from_bounds(box_out.lb, box_out.ub)
+        if isinstance(z, ImageZono):
+            new_zono = ImageZono(
+                new_zono.c, new_zono.V, z.height, z.width, z.num_channels,
+            )
+        out.append(new_zono)
+    return out
+
+
 def layernorm_box(layer: nn.LayerNorm, input_boxes: List[Box]) -> List[Box]:
     weight, bias, eps, D = _ln_params(layer)
     out: List[Box] = []

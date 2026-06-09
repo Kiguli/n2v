@@ -104,6 +104,32 @@ def gelu_star_approx(input_stars: List[Star]) -> List[Star]:
     return apply_box_lift_star(input_stars, _box)
 
 
+def gelu_zono(input_zonos):
+    """Sound (box-lifted) Zono reach for the exact (erf) GELU."""
+    from n2v.sets import Zono
+    out = []
+    for z in input_zonos:
+        lb, ub = z.get_bounds()
+        box = gelu_box([Box(
+            np.asarray(lb).reshape(-1, 1), np.asarray(ub).reshape(-1, 1),
+        )])[0]
+        out.append(Zono.from_bounds(box.lb, box.ub))
+    return out
+
+
+def gelu_tanh_zono(input_zonos):
+    """Sound (box-lifted) Zono reach for the tanh-approximation GELU."""
+    from n2v.sets import Zono
+    out = []
+    for z in input_zonos:
+        lb, ub = z.get_bounds()
+        box = gelu_tanh_box([Box(
+            np.asarray(lb).reshape(-1, 1), np.asarray(ub).reshape(-1, 1),
+        )])[0]
+        out.append(Zono.from_bounds(box.lb, box.ub))
+    return out
+
+
 def gelu_tanh_star_approx(input_stars: List[Star]) -> List[Star]:
     """Box-lifted Star reach for the tanh-approximation GELU.
 
