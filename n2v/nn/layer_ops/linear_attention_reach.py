@@ -54,34 +54,31 @@ def linear_attention_box(
         phi_q = _phi_box(q)
         phi_k = _phi_box(k)
         # Bound (phi(k).T @ v) via interval matmul, treating each as
-        # a flattened (L_k, d) matrix. The product lies in [-||v||, ||v||]
-        # per output entry; we use a conservative element-wise bound.
+        # a flattened (L_k, d) matrix.
         v_lb = v.lb.reshape(-1, d_v)
         v_ub = v.ub.reshape(-1, d_v)
         phi_k_lb = phi_k.lb.reshape(-1, d_v)
         phi_k_ub = phi_k.ub.reshape(-1, d_v)
-        # T0-4 (audit C7): the interval product below is invalid for
-        # mixed-sign V. It uses only 2 of the 4 corners
-        # (phi_lb * v_lb, phi_ub * v_ub) which is sound ONLY when
-        # both v_lb and v_ub are non-negative. For negative v the
-        # true lower bound must use phi_ub * v_lb. The four-corner
-        # interval-matmul fix lands in Commit 8 (T1-9). Until then,
-        # fail loud when V straddles or is below zero.
+        # T1-9 (audit C7): SOUND four-corner interval product. For each
+        # term phi(k)_{ij} * v_{ij} the bound is
+        #   [min, max] over the four corners
+        #     {phi_lb * v_lb, phi_lb * v_ub, phi_ub * v_lb, phi_ub * v_ub}
+        # then summed over i. The previous version used only two corners
+        # (phi_lb * v_lb, phi_ub * v_ub) which is sound ONLY when v is
+        # non-negative; for negative v the true minimum corner is
+        # phi_ub * v_lb, which was DROPPED -> reach EXCLUDED true outputs.
         # Counterexample (audit C7): phi_k in [1,3], v in [-2,1] ->
-        # true kv range [-6, 3], code returns [-2, 3], missing -6.
-        if np.any(v_lb < 0):
-            raise NotImplementedError(
-                "linear_attention_box is unsound when V contains negative "
-                "values -- the interval product drops the worst corner. "
-                "Sound four-corner matmul lands in Commit 8 (PR12_FIX_LIST "
-                "T1-9)."
-            )
-        # Each output column j of (phi(k).T @ v) is
-        #   sum_i phi(k)_{ij'} * v_{ij}
-        # For all i and j' = j, interval-multiply and sum.
-        pos_phi_k = np.maximum(phi_k_lb, 0.0)
-        kv_lb = (pos_phi_k * v_lb).sum(axis=0)
-        kv_ub = (phi_k_ub * v_ub).sum(axis=0)
+        # true kv range [-6, 3], previous code returned [-2, 3] (missing
+        # the true minimum -6). The four-corner formula correctly returns
+        # min(1*-2, 1*1, 3*-2, 3*1)=-6 and max=3.
+        c0 = phi_k_lb * v_lb
+        c1 = phi_k_lb * v_ub
+        c2 = phi_k_ub * v_lb
+        c3 = phi_k_ub * v_ub
+        elementwise_lb = np.minimum(np.minimum(c0, c1), np.minimum(c2, c3))
+        elementwise_ub = np.maximum(np.maximum(c0, c1), np.maximum(c2, c3))
+        kv_lb = elementwise_lb.sum(axis=0)
+        kv_ub = elementwise_ub.sum(axis=0)
         # phi(q) @ kv (broadcast over l_q): per-row of phi(q) we get a
         # length-d_v output. Conservatively bound by per-feature extremes.
         phi_q_lb = phi_q.lb.reshape(-1, d_v)

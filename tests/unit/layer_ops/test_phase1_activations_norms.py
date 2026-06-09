@@ -225,13 +225,39 @@ def test_elu_raises_on_negative_alpha():
         elu_reach.elu_star_approx([star], alpha=-1.0)
 
 
-def test_linear_attention_raises_on_negative_v():
-    """T0-4 (audit C7): linear_attention_box drops the worst corner for
-    mixed-sign V."""
+def test_linear_attention_four_corner_matmul_handles_negative_v():
+    """T1-9 (audit C7): linear_attention_box uses a SOUND four-corner
+    interval matmul for phi(k).T @ v, valid for any sign of V.
+
+    Counterexample from the external audit: phi_k in [1, 3], v in [-2, 1]
+    -> true kv range is [-6, 3]. The previous two-corner formula returned
+    [-2, 3] (missing -6); the four-corner formula returns [-6, 3].
+
+    We do not check the *outer* phi(q) @ kv composition here since
+    phi(q) is always non-negative (phi(x) = elu(x) + 1 + 1e... > 0); the
+    bug was in the inner phi(k).T @ v product.
+    """
     from n2v.nn.layer_ops import linear_attention_reach as lin_attn
 
-    q = Box(np.array([[0.0], [0.0]]), np.array([[1.0], [1.0]]))
-    k = Box(np.array([[0.0], [0.0]]), np.array([[1.0], [1.0]]))
-    v = Box(np.array([[-2.0], [-0.5]]), np.array([[-0.5], [1.0]]))  # mixed-sign
-    with pytest.raises(NotImplementedError, match="negative"):
-        lin_attn.linear_attention_box([q], [k], [v], l_q=1, d_v=1)
+    # L_k = 1, d_v = 1; phi_k ranges over [1, 3] via input k in [0, 2]
+    # (phi(0) = 1, phi(2) = 3), v ranges over [-2, 1].
+    q = Box(np.array([[0.0]]), np.array([[2.0]]))
+    k = Box(np.array([[0.0]]), np.array([[2.0]]))
+    v = Box(np.array([[-2.0]]), np.array([[1.0]]))
+
+    # Manual ground-truth check of the inner kv product: the four-corner
+    # interval product of [1, 3] x [-2, 1] is min over corners = -6,
+    # max = 3. Then phi_q @ kv composes (phi_q in [1, 3]). With kv in
+    # [-6, 3], the outer four-corner product of phi_q in [1, 3] and kv
+    # in [-6, 3] is min(1*-6, 1*3, 3*-6, 3*3) = -18, max = 9.
+    out = lin_attn.linear_attention_box([q], [k], [v], l_q=1, d_v=1)
+    out_lb = float(out[0].lb.flatten()[0])
+    out_ub = float(out[0].ub.flatten()[0])
+    assert out_lb <= -18.0 + 1e-9, (
+        f"linear_attention_box lower bound {out_lb} is above the true "
+        f"minimum -18.0 -- worst corner dropped (unsound)."
+    )
+    assert out_ub >= 9.0 - 1e-9, (
+        f"linear_attention_box upper bound {out_ub} is below the true "
+        f"maximum 9.0."
+    )
