@@ -74,7 +74,17 @@ class NeuralNetwork:
             return self._extract_layers_from_graph(model)
 
         try:
-            gm = torch.fx.symbolic_trace(model)
+            # T1-7 (audit workflow critical): use N2VTracer so n2v wrapper
+            # modules (SoftmaxAttention, PatchEmbed, CLSToken, DagAdd, ...)
+            # are treated as fx leaves. Without leaf treatment fx descends
+            # into each wrapper's Python forward, decomposing it into
+            # primitives the dispatcher does not handle and the multi-
+            # input dispatcher's isinstance chain becomes dead code. Leaf
+            # treatment makes each wrapper a single call_module node so
+            # the dispatcher routes it directly.
+            from n2v.nn._tracer import symbolic_trace as _n2v_symbolic_trace
+
+            gm = _n2v_symbolic_trace(model)
             return self._extract_layers_from_graph(gm)
         except Exception as e:
             raise TypeError(
