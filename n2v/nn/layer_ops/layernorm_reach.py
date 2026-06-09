@@ -116,6 +116,28 @@ def layernorm_star_approx(layer: nn.LayerNorm, input_stars: List[Star]) -> List[
                     f"by normalized_shape={D}."
                 )
             L = lb.size // D
+            # T0-4 (audit C3): the predicate-preserving Star reach below
+            # subtracts the GLOBAL mean (average over all L*D features) via
+            # _mean_along_features inside predicate_preserving_norm_star,
+            # whereas concrete LayerNorm subtracts each token's own D-element
+            # mean. For L > 1 the centring is wrong; soundness today is
+            # ONLY masked by interval_mean_var's hardcoded var_lb=0 which
+            # inflates s_ub to 1/sqrt(eps) and the slack absorbs the centring
+            # error. Any tightening of var_lb (an advertised follow-up) will
+            # turn this latently-unsound path actively unsound -- see the
+            # _norm_utils.py NOTE.
+            # Per-group mean + sigma lands in Commit 7 (T1-1). Until then,
+            # fail loud rather than rely on var_lb=0 masking. The Box path
+            # is sound and remains the workaround.
+            if L > 1:
+                raise NotImplementedError(
+                    f"LayerNorm Star reach is latently unsound for "
+                    f"multi-token inputs (L={L} > 1) -- the centring uses "
+                    f"the GLOBAL mean instead of the per-token mean, masked "
+                    f"only by var_lb=0. Per-group reach lands in Commit 7 "
+                    f"(PR12_FIX_LIST T1-1). Use layernorm_box (sound) or "
+                    f"split the input to L=1 batches."
+                )
             _, _, var_lb, var_ub = interval_mean_var(lb, ub)
             sigma_lb = float(np.sqrt(np.asarray(var_lb).item() + eps))
             sigma_ub = float(np.sqrt(np.asarray(var_ub).item() + eps))

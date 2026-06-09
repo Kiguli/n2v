@@ -111,6 +111,27 @@ def groupnorm_star_approx(layer: nn.GroupNorm, input_stars: List[Star]) -> List[
             # Box-lift fallback when predicates are absent or shape unknown.
             new_star = apply_box_lift_star([base], _box)[0]
         else:
+            # T0-4 (audit C4): the predicate-preserving Star reach below
+            # collapses per-group sigma intervals to a single cross-group
+            # [sigma_lb, sigma_ub] and subtracts the GLOBAL mean (not the
+            # per-group mean) via predicate_preserving_norm_star. Concrete
+            # GroupNorm normalises each channel-group independently. As with
+            # LayerNorm this is masked from being directly exploitable only
+            # by var_lb=0 (-> s_ub=1/sqrt(eps) huge slack); any var_lb
+            # tightening turns it actively unsound.
+            # Per-group reach lands in Commit 7 (T1-1). Until then, fail
+            # loud whenever the input has more than one channel-group; the
+            # Box path is sound and remains the workaround.
+            if num_groups > 1:
+                raise NotImplementedError(
+                    f"GroupNorm Star reach is latently unsound for "
+                    f"multi-group inputs (num_groups={num_groups} > 1) -- "
+                    f"the per-group structure is collapsed to a single "
+                    f"sigma interval and global mean, masked only by "
+                    f"var_lb=0. Per-group reach lands in Commit 7 "
+                    f"(PR12_FIX_LIST T1-1). Use groupnorm_box (sound) or "
+                    f"split into num_groups=1 batches."
+                )
             # Bound each group's scale (1/sigma) interval using IBP, then
             # build a Star that preserves the input predicates per group.
             lb, ub = base.estimate_ranges()

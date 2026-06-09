@@ -172,3 +172,66 @@ def test_grn_box():
     out = grn_reach.grn_box(layer, [Box(lb, ub)])
     assert len(out) == 1
     assert out[0].dim == 4
+
+
+# ---------------------------------------------------------------------------
+# T0-4 (audit C2/C3/C4 + C-high + C7): the multi-token Star paths for
+# RMSNorm/LayerNorm/GroupNorm, elu_reach for negative alpha, and
+# linear_attention_box for mixed-sign V must FAIL LOUD until Commit 7 /
+# Commit 8 land. These tests pin the raises so future PRs cannot regress
+# back into silently-wrong reach.
+# ---------------------------------------------------------------------------
+
+
+def test_rmsnorm_star_raises_on_multi_token():
+    layer = RMSNorm(2, eps=1e-6)  # normalized_shape=2, L=2 tokens -> 4 dims
+    layer.eval()
+    # 2 tokens x 2 D = 4 dims. Predicate-preserving path requires V.size > 0
+    # so use a non-degenerate Star (V = identity from from_bounds).
+    lb = np.array([[0.0], [0.0], [0.0], [0.0]])
+    ub = np.array([[1.0], [1.0], [1.0], [1.0]])
+    star = Star.from_bounds(lb, ub)
+    with pytest.raises(NotImplementedError, match="multi-token"):
+        rmsnorm_reach.rmsnorm_star_approx(layer, [star])
+
+
+def test_layernorm_star_raises_on_multi_token():
+    layer = nn.LayerNorm(2)
+    layer.eval()
+    lb = np.array([[0.0], [0.0], [0.0], [0.0]])
+    ub = np.array([[1.0], [1.0], [1.0], [1.0]])
+    star = Star.from_bounds(lb, ub)
+    with pytest.raises(NotImplementedError, match="multi-token"):
+        layernorm_reach.layernorm_star_approx(layer, [star])
+
+
+def test_groupnorm_star_raises_on_multi_group():
+    layer = nn.GroupNorm(num_groups=2, num_channels=4)
+    layer.eval()
+    lb = np.array([[-1.0], [-0.5], [0.0], [0.5]])
+    ub = np.array([[0.0], [0.5], [1.0], [1.5]])
+    star = Star.from_bounds(lb, ub)
+    with pytest.raises(NotImplementedError, match="multi-group"):
+        groupnorm_reach.groupnorm_star_approx(layer, [star])
+
+
+def test_elu_raises_on_negative_alpha():
+    """T0-4 (audit C-high): elu_reach assumes alpha >= 0 (monotone)."""
+    box = Box(np.array([[-3.0]]), np.array([[2.0]]))
+    with pytest.raises(NotImplementedError, match="alpha"):
+        elu_reach.elu_box([box], alpha=-1.0)
+    star = Star.from_bounds(np.array([[-3.0]]), np.array([[2.0]]))
+    with pytest.raises(NotImplementedError, match="alpha"):
+        elu_reach.elu_star_approx([star], alpha=-1.0)
+
+
+def test_linear_attention_raises_on_negative_v():
+    """T0-4 (audit C7): linear_attention_box drops the worst corner for
+    mixed-sign V."""
+    from n2v.nn.layer_ops import linear_attention_reach as lin_attn
+
+    q = Box(np.array([[0.0], [0.0]]), np.array([[1.0], [1.0]]))
+    k = Box(np.array([[0.0], [0.0]]), np.array([[1.0], [1.0]]))
+    v = Box(np.array([[-2.0], [-0.5]]), np.array([[-0.5], [1.0]]))  # mixed-sign
+    with pytest.raises(NotImplementedError, match="negative"):
+        lin_attn.linear_attention_box([q], [k], [v], l_q=1, d_v=1)

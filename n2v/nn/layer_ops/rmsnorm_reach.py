@@ -113,8 +113,28 @@ def rmsnorm_star_approx(layer, input_stars: List[Star]) -> List[Star]:
                     f"normalized_shape={D}."
                 )
             L = lb.size // D
-            # Bound x^2 conservatively across the whole input for sigma
-            # interval; tighter per-group bounds are a follow-up.
+            # T0-4 (audit C2): the predicate-preserving Star reach below
+            # collapses the rms interval to a SINGLE pair (rms_lb, rms_ub)
+            # over the whole flat input, whereas concrete RMSNorm uses each
+            # token's own rms. For L > 1 with tokens of differing magnitudes
+            # a low-magnitude token's TRUE scale s = 1/rms falls outside the
+            # global [s_lb, s_ub] and the per-feature slack cannot cover the
+            # error, EXCLUDING the true output from the reach set.
+            # Counterexample (audit): D=3, L=2, group0~5, group1~0.4 ->
+            # Star.contains(true_output) is False, escapes by ~0.86.
+            # The per-group Star reach lands in Commit 7 (T1-1). Until then,
+            # fail loud rather than return an unsound set. The Box path
+            # (rmsnorm_box) is sound and remains the workaround.
+            if L > 1:
+                raise NotImplementedError(
+                    f"RMSNorm Star reach is unsound for multi-token inputs "
+                    f"(L={L} > 1) -- the global rms interval excludes true "
+                    f"per-token outputs. Per-group reach lands in Commit 7 "
+                    f"(PR12_FIX_LIST T1-1). Use rmsnorm_box (sound) or split "
+                    f"the input to L=1 batches."
+                )
+            # Bound x^2 conservatively for sigma interval; tighter per-group
+            # bounds are a follow-up (T1-1, Commit 7).
             lb_flat = lb.reshape(-1)
             ub_flat = ub.reshape(-1)
             sq_lb = np.where(

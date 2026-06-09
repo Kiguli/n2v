@@ -44,7 +44,20 @@ def interval_mean_var(lb: np.ndarray, ub: np.ndarray) -> Tuple[np.ndarray, np.nd
     #   max |x_i - mu| <= max(|ub_i - mu_lb|, |lb_i - mu_ub|)
     devs = np.maximum(np.abs(ub - mu_lb), np.abs(lb - mu_ub))
     var_ub = (devs ** 2).mean()
-    var_lb = 0.0  # Always sound to use zero (degenerate constant input).
+    # !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+    # T0-4 / T0-5 booby-trap NOTE (audit C2/C3/C4 + workflow critical):
+    # var_lb is hardcoded to zero. For eps=1e-5 this gives sigma_ub ≈ 316
+    # per dim and the predicate-preserving Star norm reach's per-feature
+    # slack absorbs the GLOBAL-mean centring error in the LayerNorm /
+    # GroupNorm Star paths (the "masked" unsoundness). Until Commit 7
+    # (PR12_FIX_LIST T1-1) lands the per-group mean + sigma intervals, do
+    # NOT tighten var_lb -- doing so removes the masking and flips
+    # LayerNorm/GroupNorm Star reach from latently-unsound to actively-
+    # unsound (excluded true outputs, SAT/UNSAT inversion). A real
+    # var_lb computed from the centred-square lower bound is a follow-up
+    # to Commit 7, not before.
+    # !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+    var_lb = 0.0  # See booby-trap NOTE above.
 
     return (
         np.array([mu_lb]),

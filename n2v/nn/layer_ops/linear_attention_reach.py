@@ -60,6 +60,22 @@ def linear_attention_box(
         v_ub = v.ub.reshape(-1, d_v)
         phi_k_lb = phi_k.lb.reshape(-1, d_v)
         phi_k_ub = phi_k.ub.reshape(-1, d_v)
+        # T0-4 (audit C7): the interval product below is invalid for
+        # mixed-sign V. It uses only 2 of the 4 corners
+        # (phi_lb * v_lb, phi_ub * v_ub) which is sound ONLY when
+        # both v_lb and v_ub are non-negative. For negative v the
+        # true lower bound must use phi_ub * v_lb. The four-corner
+        # interval-matmul fix lands in Commit 8 (T1-9). Until then,
+        # fail loud when V straddles or is below zero.
+        # Counterexample (audit C7): phi_k in [1,3], v in [-2,1] ->
+        # true kv range [-6, 3], code returns [-2, 3], missing -6.
+        if np.any(v_lb < 0):
+            raise NotImplementedError(
+                "linear_attention_box is unsound when V contains negative "
+                "values -- the interval product drops the worst corner. "
+                "Sound four-corner matmul lands in Commit 8 (PR12_FIX_LIST "
+                "T1-9)."
+            )
         # Each output column j of (phi(k).T @ v) is
         #   sum_i phi(k)_{ij'} * v_{ij}
         # For all i and j' = j, interval-multiply and sum.
