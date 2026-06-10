@@ -159,6 +159,65 @@ def test_linear_block_tile_across_all_set_types():
         assert lb_o.size == L * 2  # L tokens of D_out=2
 
 
+def test_parallel_residual_decomposes_via_fx_audit_I5():
+    """PR-1 audit I5: ParallelResidual must NOT be an fx leaf -- it
+    has no reach helper, so leaf treatment caused
+    ``_registry_lookup`` -> ``None`` -> ``NotImplementedError``. Now
+    excluded from the leaf list so fx decomposes
+    ``y = x + a(x) + b(x)`` into two operator.add(set, set) calls.
+    """
+    from n2v.nn import NeuralNetwork
+    from n2v.nn.layers.parallel_residual import ParallelResidual
+
+    class TinyParallelResid(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.block = ParallelResidual(
+                sublayer_a=nn.Linear(3, 3, bias=False),
+                sublayer_b=nn.Linear(3, 3, bias=False),
+            )
+            with torch.no_grad():
+                self.block.sublayer_a.weight.zero_()
+                self.block.sublayer_b.weight.zero_()
+
+        def forward(self, x):
+            return self.block(x)
+
+    model = TinyParallelResid().eval()
+    box = _flat_box(np.array([0.0, 1.0, 2.0]), np.array([0.5, 1.5, 2.5]))
+    out = NeuralNetwork(model).reach(box, method="approx")
+    # With both sublayers zeroed, y = x + 0 + 0 = x.
+    np.testing.assert_allclose(
+        np.asarray(out[0].lb).flatten(), [0.0, 1.0, 2.0], atol=1e-9,
+    )
+    np.testing.assert_allclose(
+        np.asarray(out[0].ub).flatten(), [0.5, 1.5, 2.5], atol=1e-9,
+    )
+
+
+def test_overlap_patch_embed_zono_dispatch_lands_audit_I5():
+    """PR-1 audit I5: OverlapPatchEmbed must have a dispatcher branch.
+    Previously absent -> _registry_lookup raise. Now: route the
+    Conv2d + flatten + transpose through PatchEmbed reach + apply
+    LayerNorm. Smoke-tests dispatch only; concrete-forward containment
+    is exercised by the PatchEmbed test sweep.
+    """
+    from n2v.nn.layers import OverlapPatchEmbed
+    from n2v.nn.layer_ops import overlap_patch_embed_reach as ope
+
+    layer = OverlapPatchEmbed(
+        in_channels=1, embed_dim=4, patch_size=2, stride=2,
+    ).eval()
+    zono_in = ImageZono.from_bounds(
+        np.zeros(4), np.ones(4),
+        height=2, width=2, num_channels=1,
+    )
+    out = ope.overlap_patch_embed_zono(layer, [zono_in])
+    assert len(out) == 1
+    # 2x2 image / (2x2 patch, stride 2) -> 1x1 = 1 token of embed_dim=4.
+    assert out[0].dim == 4
+
+
 def test_patch_embed_box_multichannel_requires_image_shape_audit_I2():
     """PR-1 audit I2: PatchEmbed Box reach with in_channels > 1 must
     REFUSE to infer layout. The previous code silently called

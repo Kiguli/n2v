@@ -112,6 +112,10 @@ from n2v.nn.layers.segment_embedding import SegmentEmbedding as _SegmentEmbeddin
 # dedicated dispatcher branch since it composes Conv2d + flatten + transpose.
 from n2v.nn.layers.patch_embed import PatchEmbed as _PatchEmbed
 from . import patch_embed_reach
+# PR-1 audit I5: OverlapPatchEmbed was an fx leaf without a dispatcher
+# branch -- every set type fell through to NotImplementedError. Now wired.
+from n2v.nn.layers.overlap_patch_embed import OverlapPatchEmbed as _OverlapPatchEmbed
+from . import overlap_patch_embed_reach
 
 # Phase 5 ports: conv variants & specialty
 from . import tied_linear_reach
@@ -403,6 +407,10 @@ def _reach_layer_star(layer: nn.Module, input_sets: List, method: str, **kwargs)
         )
     elif isinstance(layer, _PatchEmbed):
         return patch_embed_reach.patch_embed_star(layer, input_sets, **kwargs)
+    elif isinstance(layer, _OverlapPatchEmbed):
+        return overlap_patch_embed_reach.overlap_patch_embed_star(
+            layer, input_sets, **kwargs,
+        )
 
     # ----- Phase 5: conv variants & specialty -----
     elif isinstance(layer, _TiedLinear):
@@ -544,6 +552,10 @@ def _reach_layer_zono(layer: nn.Module, input_sets: List, method: str, **kwargs)
         )
     elif isinstance(layer, _PatchEmbed):
         return patch_embed_reach.patch_embed_zono(layer, input_sets)
+    elif isinstance(layer, _OverlapPatchEmbed):
+        return overlap_patch_embed_reach.overlap_patch_embed_zono(
+            layer, input_sets,
+        )
 
     # ----- Phase 1 Zono routes (box-lifted, sound but loose; ViT enable) -----
     elif isinstance(layer, nn.LayerNorm):
@@ -727,6 +739,12 @@ def _reach_layer_box(layer: nn.Module, input_sets: List, method: str, **kwargs) 
             image_shape=kwargs.get("image_shape"),
             image_layout=kwargs.get("image_layout", "HWC"),
         )
+    elif isinstance(layer, _OverlapPatchEmbed):
+        return overlap_patch_embed_reach.overlap_patch_embed_box(
+            layer, input_sets,
+            image_shape=kwargs.get("image_shape"),
+            image_layout=kwargs.get("image_layout", "HWC"),
+        )
 
     # ----- Phase 5: conv variants & specialty -----
     elif isinstance(layer, _TiedLinear):
@@ -848,6 +866,12 @@ def _reach_layer_hexatope(layer: nn.Module, input_sets: List, method: str, **kwa
             image_shape=kwargs.get("image_shape"),
             image_layout=kwargs.get("image_layout", "HWC"),
         )
+    elif isinstance(layer, _OverlapPatchEmbed):
+        return overlap_patch_embed_reach.overlap_patch_embed_hexatope(
+            layer, input_sets,
+            image_shape=kwargs.get("image_shape"),
+            image_layout=kwargs.get("image_layout", "HWC"),
+        )
 
     # PR-1 audit I7: CLSToken and ConcatWithFrozenSkip are fx leaves via
     # N2VTracer but previously had no Hex/Oct branches -- any end-to-end
@@ -959,6 +983,12 @@ def _reach_layer_octatope(layer: nn.Module, input_sets: List, method: str, **kwa
             )
     elif isinstance(layer, _PatchEmbed):
         return patch_embed_reach.patch_embed_octatope(
+            layer, input_sets,
+            image_shape=kwargs.get("image_shape"),
+            image_layout=kwargs.get("image_layout", "HWC"),
+        )
+    elif isinstance(layer, _OverlapPatchEmbed):
+        return overlap_patch_embed_reach.overlap_patch_embed_octatope(
             layer, input_sets,
             image_shape=kwargs.get("image_shape"),
             image_layout=kwargs.get("image_layout", "HWC"),
