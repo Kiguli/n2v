@@ -502,6 +502,44 @@ def test_fx_add_set_plus_constant_image_star_4d_V():
     np.testing.assert_allclose(ub, [2, 3, 4, 5, 6, 7, 8, 9], atol=1e-9)
 
 
+def test_fx_getitem_image_star_4d_V_flattens_before_slice():
+    """PR-1 audit I6: ``operator.getitem`` on an ImageStar previously did
+    ``s.V[row_start:row_end]`` which slices the FIRST axis (H) of the 4D
+    V tensor (H, W, C, nVar+1), producing a 4D slice that
+    ``Star(...)`` rejects with ``ValueError: too many values to unpack``.
+
+    Fix: flatten via ``to_star()`` (HWC-row-major == token-major) BEFORE
+    row-slicing. Pin: an ImageStar carrying a 2x2 image with C=2 (so dim
+    = 8) and a model that selects the first token (``x[:, 0]``) must
+    return a Star with dim = 2 (D = C since L = H*W = 4), not raise.
+    """
+    from n2v.nn import NeuralNetwork
+
+    class SliceFirstToken(nn.Module):
+        # H*W=4 tokens, C=2 channels -> token-major flat layout.
+        n_tokens = 4
+
+        def forward(self, x):
+            x = x.view(1, 4, 2)
+            return x[:, 0]
+
+    model = SliceFirstToken().eval()
+    image_star = ImageStar.from_bounds(
+        np.zeros((8, 1)), np.ones((8, 1)),
+        height=2, width=2, num_channels=2,
+    )
+    out = NeuralNetwork(model).reach(image_star, method="approx", n_tokens=4)
+    assert len(out) == 1
+    # The first token is the (h=0, w=0) pixel -> rows 0..1 of the HWC-flat
+    # layout = the first 2 channels of pixel (0,0).
+    lb, ub = out[0].get_ranges()
+    lb = np.asarray(lb).flatten()
+    ub = np.asarray(ub).flatten()
+    assert lb.shape == (2,), f"expected dim 2, got {lb.shape}"
+    np.testing.assert_allclose(lb, [0.0, 0.0], atol=1e-9)
+    np.testing.assert_allclose(ub, [1.0, 1.0], atol=1e-9)
+
+
 def test_fx_getitem_negative_token_idx():
     """Audit spot-check: getitem with negative token_idx (e.g. ``x[:, -1]``
     -- the canonical "select last token / CLS / DistillationToken" pattern)

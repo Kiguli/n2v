@@ -588,10 +588,26 @@ def _handle_graphmodule(
                                     row_start = token_idx * D
                                     row_end = row_start + D
                                     if isinstance(s, ImageStar):
-                                        new_V = s.V[row_start:row_end]
+                                        # PR-1 audit I6: ImageStar.V is 4D
+                                        # ``(H, W, C, nVar+1)``. The prior
+                                        # ``s.V[row_start:row_end]`` sliced the
+                                        # H axis and produced a 4D matrix that
+                                        # Star.__init__ rejected with
+                                        # ``ValueError: too many values to
+                                        # unpack`` -- a confusing raise on
+                                        # legitimate inputs (e.g. Pooler's
+                                        # ``x[:, 0]`` after PatchEmbed).
+                                        # Fix: flatten via ``to_star()`` first
+                                        # (HWC-row-major == token-major; see
+                                        # ``patch_embed_reach._patch_embed_
+                                        # image_star``), then row-slice the
+                                        # 2D Star.
+                                        s_flat = s.to_star()
+                                        new_V = s_flat.V[row_start:row_end]
                                         result.append(Star(
-                                            new_V, s.C, s.d,
-                                            s.predicate_lb, s.predicate_ub,
+                                            new_V, s_flat.C, s_flat.d,
+                                            s_flat.predicate_lb,
+                                            s_flat.predicate_ub,
                                         ))
                                     elif isinstance(s, Star):
                                         new_V = s.V[row_start:row_end]
@@ -901,6 +917,16 @@ def _handle_multi_input_op(
             # over-approximation as the Star path's box lift today,
             # but routed via the Zono machinery. Reduce each stream to
             # its IBP box, run softmax_attention_box, return as Zono.
+            #
+            # PR-1 audit I4: previously this branch unconditionally
+            # returned ``Zono.from_bounds(...)`` even when ``set_type is
+            # ImageZono``, silently degrading the carried (H, W, C)
+            # layout to a plain Zono. Masked inside MinimalViT (Linear
+            # / LayerNorm accept Zono), but as soon as a downstream op
+            # expects ImageZono shape it would misroute. Mirror the
+            # Hex/Oct gating: reconstruct ImageZono from bounds when
+            # set_type is ImageZono, preserving (H, W, C) from the V
+            # stream (which carries the post-attention layout).
             def _to_box_list_with_bounds(set_list):
                 box_list = []
                 for s in set_list:
@@ -920,6 +946,24 @@ def _handle_multi_input_op(
             box_out = softmax_attention_reach.softmax_attention_box(
                 q_b, k_b, v_b, l_q=l_q, d_v=d_v,
             )
+            # Gate the output type by the ACTUAL V-stream type, not the
+            # graph-level ``set_type``: an upstream Linear/LayerNorm may
+            # have demoted ImageZono to plain Zono before reaching the
+            # attention block, and the downstream graph then expects a
+            # plain Zono too. Only re-lift to ImageZono when the V
+            # stream actually carries (H, W, C).
+            first_v = v_stream[0]
+            if isinstance(first_v, ImageZono):
+                H = first_v.height
+                W = first_v.width
+                C = first_v.num_channels
+                return [
+                    ImageZono.from_bounds(
+                        b.lb, b.ub,
+                        height=H, width=W, num_channels=C,
+                    )
+                    for b in box_out
+                ]
             return [Zono.from_bounds(b.lb, b.ub) for b in box_out]
         if set_type is Hexatope or set_type is Octatope:
             # Same box-lift pattern as the Zono path; sound but loose.
