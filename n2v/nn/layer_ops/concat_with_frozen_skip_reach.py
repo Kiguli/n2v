@@ -96,3 +96,44 @@ def concat_with_frozen_skip_zono(layer, input_zonos: List[Zono]) -> List[Zono]:
         new_V = np.vstack([z.V, np.zeros((d_skip, n_gen))])
         out.append(Zono(new_c, new_V))
     return out
+
+
+def concat_with_frozen_skip_hexatope(layer, input_sets):
+    """Sound (box-lifted) Hexatope reach for ConcatWithFrozenSkip.
+
+    PR-1 audit I7: previously absent. Box-lifts the input via IBP,
+    runs ``concat_with_frozen_skip_box``, and rebuilds the Hexatope
+    from the result. Loose but sound; symmetric to
+    ``patch_embed_hexatope`` / ``cls_token_hexatope``.
+    """
+    from n2v.sets import Hexatope
+
+    out = []
+    for h in input_sets:
+        lb, ub = h.estimate_ranges()
+        box_in = Box(
+            np.asarray(lb).reshape(-1, 1),
+            np.asarray(ub).reshape(-1, 1),
+        )
+        box_out = concat_with_frozen_skip_box(layer, [box_in])[0]
+        out.append(Hexatope.from_bounds(box_out.lb, box_out.ub))
+    return out
+
+
+def concat_with_frozen_skip_octatope(layer, input_sets):
+    """Sound (box-lifted) Octatope reach for ConcatWithFrozenSkip (audit I7).
+
+    Same box-lift pattern as ``concat_with_frozen_skip_hexatope``.
+    """
+    from n2v.sets import Octatope
+
+    out = []
+    for o in input_sets:
+        lb, ub = o.estimate_ranges()
+        box_in = Box(
+            np.asarray(lb).reshape(-1, 1),
+            np.asarray(ub).reshape(-1, 1),
+        )
+        box_out = concat_with_frozen_skip_box(layer, [box_in])[0]
+        out.append(Octatope.from_bounds(box_out.lb, box_out.ub))
+    return out

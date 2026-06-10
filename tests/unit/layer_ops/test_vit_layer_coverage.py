@@ -328,6 +328,101 @@ def test_activation_box_floor_is_below_true_min_on_narrow_intervals():
         )
 
 
+# ------- CLSToken / ConcatWithFrozenSkip Hex+Oct coverage (audit I7) --------
+
+
+def test_cls_token_hexatope_box_lifted_sound():
+    """PR-1 audit I7: CLSToken Hexatope branch was previously absent in
+    the dispatcher -- any end-to-end ViT with Hex reach raised through
+    _registry_lookup. Box-lifted IBP path is sound; pin: a Hex input
+    routed through CLSToken must return a Hex with the expected
+    prepended-token bounds.
+    """
+    from n2v.nn.layers.cls_token import CLSToken
+    from n2v.nn.layer_ops import cls_token_reach
+
+    layer = CLSToken(dim=2)
+    with torch.no_grad():
+        layer.token.copy_(torch.tensor([0.5, -0.5]))
+
+    hex_in = Hexatope.from_bounds(
+        np.array([[0.0], [0.1], [0.2], [0.3]]),
+        np.array([[1.0], [1.1], [1.2], [1.3]]),
+    )
+    out = cls_token_reach.cls_token_hexatope(layer, [hex_in])
+    assert len(out) == 1
+    assert isinstance(out[0], Hexatope)
+    lb, ub = out[0].estimate_ranges()
+    lb = np.asarray(lb).flatten()
+    ub = np.asarray(ub).flatten()
+    # Expected: [0.5, -0.5, 0.0, 0.1, 0.2, 0.3] / [0.5, -0.5, 1.0, 1.1, 1.2, 1.3]
+    np.testing.assert_allclose(lb, [0.5, -0.5, 0.0, 0.1, 0.2, 0.3], atol=1e-9)
+    np.testing.assert_allclose(ub, [0.5, -0.5, 1.0, 1.1, 1.2, 1.3], atol=1e-9)
+
+
+def test_cls_token_octatope_box_lifted_sound():
+    from n2v.nn.layers.cls_token import CLSToken
+    from n2v.nn.layer_ops import cls_token_reach
+
+    layer = CLSToken(dim=2)
+    with torch.no_grad():
+        layer.token.copy_(torch.tensor([0.5, -0.5]))
+
+    oct_in = Octatope.from_bounds(
+        np.array([[0.0], [0.1]]),
+        np.array([[1.0], [1.1]]),
+    )
+    out = cls_token_reach.cls_token_octatope(layer, [oct_in])
+    assert isinstance(out[0], Octatope)
+    lb, ub = out[0].estimate_ranges()
+    lb = np.asarray(lb).flatten()
+    ub = np.asarray(ub).flatten()
+    np.testing.assert_allclose(lb, [0.5, -0.5, 0.0, 0.1], atol=1e-9)
+    np.testing.assert_allclose(ub, [0.5, -0.5, 1.0, 1.1], atol=1e-9)
+
+
+def test_concat_with_frozen_skip_hexatope_box_lifted_sound():
+    """Audit I7: ConcatWithFrozenSkip Hex/Oct branches were absent."""
+    from n2v.nn.layers.concat_with_frozen_skip import ConcatWithFrozenSkip
+    from n2v.nn.layer_ops import concat_with_frozen_skip_reach
+
+    layer = ConcatWithFrozenSkip(
+        skip=torch.tensor([0.7, 0.8]), dim=-1,
+    )
+
+    hex_in = Hexatope.from_bounds(
+        np.array([[0.0], [0.1]]),
+        np.array([[1.0], [1.1]]),
+    )
+    out = concat_with_frozen_skip_reach.concat_with_frozen_skip_hexatope(
+        layer, [hex_in],
+    )
+    assert isinstance(out[0], Hexatope)
+    lb, ub = out[0].estimate_ranges()
+    lb = np.asarray(lb).flatten()
+    ub = np.asarray(ub).flatten()
+    np.testing.assert_allclose(lb, [0.0, 0.1, 0.7, 0.8], atol=1e-9)
+    np.testing.assert_allclose(ub, [1.0, 1.1, 0.7, 0.8], atol=1e-9)
+
+
+def test_concat_with_frozen_skip_octatope_box_lifted_sound():
+    from n2v.nn.layers.concat_with_frozen_skip import ConcatWithFrozenSkip
+    from n2v.nn.layer_ops import concat_with_frozen_skip_reach
+
+    layer = ConcatWithFrozenSkip(
+        skip=torch.tensor([0.7, 0.8]), dim=-1,
+    )
+
+    oct_in = Octatope.from_bounds(
+        np.array([[0.0], [0.1]]),
+        np.array([[1.0], [1.1]]),
+    )
+    out = concat_with_frozen_skip_reach.concat_with_frozen_skip_octatope(
+        layer, [oct_in],
+    )
+    assert isinstance(out[0], Octatope)
+
+
 # ----------------------------- F.gelu approximate kwarg leak (audit C1) -----
 
 

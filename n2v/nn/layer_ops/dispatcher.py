@@ -829,6 +829,16 @@ def _reach_layer_hexatope(layer: nn.Module, input_sets: List, method: str, **kwa
     elif isinstance(layer, _PatchEmbed):
         return patch_embed_reach.patch_embed_hexatope(layer, input_sets)
 
+    # PR-1 audit I7: CLSToken and ConcatWithFrozenSkip are fx leaves via
+    # N2VTracer but previously had no Hex/Oct branches -- any end-to-end
+    # ViT with these wrappers raised through ``_registry_lookup``.
+    elif isinstance(layer, _CLSToken):
+        return cls_token_reach.cls_token_hexatope(layer, input_sets)
+    elif isinstance(layer, _ConcatWithFrozenSkip):
+        return concat_with_frozen_skip_reach.concat_with_frozen_skip_hexatope(
+            layer, input_sets,
+        )
+
     elif isinstance(layer, (nn.Identity, nn.Dropout, nn.Dropout2d, nn.Dropout3d)):
         return input_sets
 
@@ -926,6 +936,14 @@ def _reach_layer_octatope(layer: nn.Module, input_sets: List, method: str, **kwa
             )
     elif isinstance(layer, _PatchEmbed):
         return patch_embed_reach.patch_embed_octatope(layer, input_sets)
+
+    # PR-1 audit I7: CLSToken and ConcatWithFrozenSkip Oct branches.
+    elif isinstance(layer, _CLSToken):
+        return cls_token_reach.cls_token_octatope(layer, input_sets)
+    elif isinstance(layer, _ConcatWithFrozenSkip):
+        return concat_with_frozen_skip_reach.concat_with_frozen_skip_octatope(
+            layer, input_sets,
+        )
 
     elif isinstance(layer, (nn.Identity, nn.Dropout, nn.Dropout2d, nn.Dropout3d)):
         return input_sets
