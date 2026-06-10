@@ -159,6 +159,67 @@ def test_linear_block_tile_across_all_set_types():
         assert lb_o.size == L * 2  # L tokens of D_out=2
 
 
+def test_mix_ffn_zono_end_to_end_audit_C3():
+    """PR-1 audit C3: MixFFN was unreachable end-to-end because
+    ``mix_ffn_passthrough`` raised unconditionally while T1-7 made
+    MixFFN an fx leaf. Now: implement the forward (fc1 -> reshape ->
+    dwconv -> flatten -> GELU -> fc2) directly and verify the Zono
+    path completes without raising. Pin: output shape and
+    Monte-Carlo containment of one concrete forward sample.
+    """
+    from n2v.nn.layers.mix_ffn import MixFFN
+    from n2v.nn.layer_ops.mix_ffn_reach import mix_ffn_passthrough
+
+    torch.manual_seed(0)
+    L = 4   # 2x2 spatial layout
+    dim = 2
+    hidden = 4
+    layer = MixFFN(dim=dim, hidden_dim=hidden).eval()
+
+    # Flat token-major input box of dim L*dim = 8.
+    lb_vec = np.linspace(0.0, 0.1, L * dim)
+    ub_vec = lb_vec + 0.05
+    z_in = Zono.from_bounds(
+        lb_vec.reshape(-1, 1), ub_vec.reshape(-1, 1),
+    )
+    out = mix_ffn_passthrough(layer, [z_in], n_tokens=L)
+    assert len(out) == 1
+    assert out[0].dim == L * dim, f"expected dim {L*dim}, got {out[0].dim}"
+
+    # Monte-Carlo containment: random samples in the input box should
+    # map to outputs inside the reach bounds.
+    out_lb, out_ub = out[0].get_bounds()
+    out_lb = np.asarray(out_lb).flatten()
+    out_ub = np.asarray(out_ub).flatten()
+    rng = np.random.default_rng(0)
+    for _ in range(8):
+        x_sample = rng.uniform(lb_vec, ub_vec)
+        x_t = torch.from_numpy(x_sample.astype(np.float32)).reshape(1, L, dim)
+        with torch.no_grad():
+            y_t = layer(x_t).detach().cpu().numpy().flatten()
+        assert np.all(out_lb - 1e-6 <= y_t), (
+            f"MC sample below reach lb: y={y_t}, lb={out_lb}"
+        )
+        assert np.all(y_t <= out_ub + 1e-6), (
+            f"MC sample above reach ub: y={y_t}, ub={out_ub}"
+        )
+
+
+def test_mix_ffn_missing_n_tokens_raises_audit_C3():
+    """Audit C3: MixFFN reach without an explicit ``n_tokens`` signal
+    must raise -- the dwconv shape is unrecoverable from a flat set.
+    """
+    from n2v.nn.layers.mix_ffn import MixFFN
+    from n2v.nn.layer_ops.mix_ffn_reach import mix_ffn_passthrough
+
+    layer = MixFFN(dim=2, hidden_dim=4).eval()
+    z_in = Zono.from_bounds(
+        np.zeros((8, 1)), np.ones((8, 1)),
+    )
+    with pytest.raises(NotImplementedError, match="n_tokens"):
+        mix_ffn_passthrough(layer, [z_in])
+
+
 def test_parallel_residual_decomposes_via_fx_audit_I5():
     """PR-1 audit I5: ParallelResidual must NOT be an fx leaf -- it
     has no reach helper, so leaf treatment caused
