@@ -272,6 +272,97 @@ def test_fx_add_set_plus_constant_all_set_types():
 # ----------------------------- fx operator.getitem (tensor slice) ----------
 
 
+def test_fx_add_set_plus_constant_image_star_4d_V():
+    """Audit spot-check: the operator.add set+const handler for ImageStar
+    previously wrote ``new_V[:, 0:1] = ...`` which slices the W axis of the
+    4D V tensor ``(H, W, C, n_var+1)`` rather than the centre column.
+
+    For an ImageStar input the slice produced shape ``(H, 1, C, n_var+1)``
+    while const_flat was ``(flat_dim, 1)`` — numpy broadcast either crashed
+    or silently mis-aligned. The fix indexes ``new_V[..., 0]`` (last axis,
+    centre column) and reshapes the constant to ``(H, W, C)``.
+
+    This test pins the fixed behaviour: a per-element constant add on a
+    (H=2, W=2, C=2) ImageStar produces the correct per-element output.
+    """
+    from n2v.nn import NeuralNetwork
+    from n2v.sets.image_star import ImageStar
+
+    class IdAddConst(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.register_buffer(
+                "c",
+                torch.tensor(
+                    [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0],
+                ).reshape(2, 2, 2),
+            )
+
+        def forward(self, x):
+            return x + self.c
+
+    model = IdAddConst().eval()
+    star = ImageStar.from_bounds(
+        np.zeros((8, 1)), np.ones((8, 1)),
+        height=2, width=2, num_channels=2,
+    )
+    out = NeuralNetwork(model).reach(star, method="approx")
+    assert len(out) == 1
+    lb, ub = out[0].get_ranges()
+    lb = np.asarray(lb).flatten()
+    ub = np.asarray(ub).flatten()
+    # Expected: input is [0, 1] elementwise; add [1, 2, 3, 4, 5, 6, 7, 8]
+    # element-wise; output is [1..8, 2..9].
+    np.testing.assert_allclose(lb, [1, 2, 3, 4, 5, 6, 7, 8], atol=1e-9)
+    np.testing.assert_allclose(ub, [2, 3, 4, 5, 6, 7, 8, 9], atol=1e-9)
+
+
+def test_fx_getitem_negative_token_idx():
+    """Audit spot-check: getitem with negative token_idx (e.g. ``x[:, -1]``
+    -- the canonical "select last token / CLS / DistillationToken" pattern)
+    previously produced an EMPTY reach because
+    ``row_start = token_idx * D = -D`` and ``row_end = 0`` made ``s.V[-D:0]``
+    an empty slice.
+
+    The fix normalises negative indices via ``token_idx + L`` and raises on
+    out-of-range. This test pins both behaviours.
+    """
+    from n2v.nn import NeuralNetwork
+
+    class SliceLast(nn.Module):
+        n_tokens = 2
+
+        def forward(self, x):
+            x = x.view(1, 2, 3)
+            return x[:, -1]
+
+    model = SliceLast().eval()
+    box = _flat_box(
+        np.array([0.0, 1.0, 2.0, 10.0, 11.0, 12.0]),
+        np.array([0.5, 1.5, 2.5, 10.5, 11.5, 12.5]),
+    )
+    out = NeuralNetwork(model).reach(box, method="approx", n_tokens=2)
+    # x[:, -1] selects the LAST token: rows 3-5 of the flat layout.
+    np.testing.assert_allclose(
+        out[0].lb.flatten(), np.array([10.0, 11.0, 12.0]), atol=1e-9,
+    )
+    np.testing.assert_allclose(
+        out[0].ub.flatten(), np.array([10.5, 11.5, 12.5]), atol=1e-9,
+    )
+
+    class BadSlice(nn.Module):
+        n_tokens = 2
+
+        def forward(self, x):
+            x = x.view(1, 2, 3)
+            return x[:, 5]  # out of range
+
+    with pytest.raises(NotImplementedError, match="out of range"):
+        NeuralNetwork(BadSlice().eval()).reach(
+            box, method="approx", n_tokens=2,
+        )
+
+
 def test_fx_getitem_slice_all_set_types():
     """End-to-end via a tiny model: ``x[:, 0]`` extracts the first token
     of a sequence-flattened reach set. Pins the fx call_function

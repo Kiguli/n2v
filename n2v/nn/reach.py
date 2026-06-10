@@ -428,8 +428,16 @@ def _handle_graphmodule(
                     result = []
                     for s in sets_arg:
                         if isinstance(s, ImageStar):
+                            # FIX: ImageStar.V is (H, W, C, n_var+1) — 4D.
+                            # The centre column is V[..., 0] (last axis,
+                            # index 0); the prior new_V[:, 0:1] sliced the
+                            # *W* axis and crashed via numpy broadcast
+                            # against const_flat shape (flat_dim, 1).
                             new_V = s.V.copy()
-                            new_V[:, 0:1] = new_V[:, 0:1] + const_flat
+                            const_hwc = np.asarray(
+                                const_arg, dtype=np.float64,
+                            ).reshape(s.height, s.width, s.num_channels)
+                            new_V[..., 0] = new_V[..., 0] + const_hwc
                             result.append(ImageStar(
                                 new_V, s.C, s.d, s.predicate_lb, s.predicate_ub,
                                 s.height, s.width, s.num_channels,
@@ -541,6 +549,20 @@ def _handle_graphmodule(
                                             f"``model.n_tokens``."
                                         )
                                     D = s.dim // L
+                                    # FIX: normalise negative token_idx
+                                    # (e.g. ``x[:, -1]`` selects the last
+                                    # token). Without this, token_idx=-1
+                                    # gives row_start=-D, row_end=0 and the
+                                    # slice ``s.V[-D:0]`` is EMPTY, silently
+                                    # producing a zero-dim reach output.
+                                    if token_idx < 0:
+                                        token_idx = token_idx + L
+                                    if not (0 <= token_idx < L):
+                                        raise NotImplementedError(
+                                            f"operator.getitem '{node.name}': "
+                                            f"token_idx={inner_idx[0]} is out "
+                                            f"of range for L={L}."
+                                        )
                                     row_start = token_idx * D
                                     row_end = row_start + D
                                     if isinstance(s, ImageStar):
