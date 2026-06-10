@@ -39,17 +39,20 @@ FUNCTION_TO_MODULE_CLS: dict[type, type[nn.Module]] = {
     F.relu: nn.ReLU,
     torch.relu: nn.ReLU,
     F.relu6: nn.ReLU6,
-    # NOTE (audit T0-2 / C6): do NOT add ``F.elu`` or ``F.leaky_relu`` here.
-    # ``_function_node_to_module`` consults this dict FIRST. The dict value
-    # is constructed via ``cls()`` with no kwargs, so a custom
-    # ``negative_slope`` / ``alpha`` on the call_function node would be
-    # silently dropped, producing an unsound (under-approximating) reach
-    # that excludes the true output (counterexample: ``F.leaky_relu(x,
-    # negative_slope=0.5)`` returns reach ``[-0.02, -0.005]`` while the
-    # true output is ``[-1.0, -0.25]``). The dedicated parameter-extraction
-    # branches in ``_function_node_to_module`` below correctly read the
-    # kwargs and must remain the only path for these two functions.
-    F.gelu: nn.GELU,
+    # NOTE (audit T0-2 / C6 / PR-1 audit C1): do NOT add ``F.elu``,
+    # ``F.leaky_relu``, or ``F.gelu`` here. ``_function_node_to_module``
+    # consults this dict FIRST. The dict value is constructed via ``cls()``
+    # with no kwargs, so a custom ``negative_slope`` / ``alpha`` /
+    # ``approximate`` on the call_function node would be silently dropped,
+    # producing an unsound (under-approximating) reach that excludes the
+    # true output (counterexamples: ``F.leaky_relu(x, negative_slope=0.5)``
+    # returns reach ``[-0.02, -0.005]`` while the true output is
+    # ``[-1.0, -0.25]``; ``F.gelu(x, approximate='tanh')`` routes through
+    # the erf-form floor -0.169972 while the tanh form dips to -0.170041
+    # near x = -0.7517, producing an above-floor lower bound). The
+    # dedicated parameter-extraction branches in ``_function_node_to_module``
+    # below correctly read the kwargs and must remain the only path for
+    # these three functions.
     F.silu: nn.SiLU,
     F.hardswish: nn.Hardswish,
     torch.sigmoid: nn.Sigmoid,
@@ -212,6 +215,25 @@ def _function_node_to_module(
                 and not isinstance(node.args[1], fx.Node)):
             alpha = node.args[1]
         return nn.ELU(alpha=alpha)
+
+    if fn is F.gelu:
+        # PR-1 audit C1: F.gelu(x, approximate='tanh') silently dropped the
+        # kwarg when routed through FUNCTION_TO_MODULE_CLS. The tanh-form
+        # floor is BELOW the erf-form floor, so the wrong dispatcher branch
+        # produced an unsound reach near the dip (above-floor lower bound).
+        # Read the kwarg explicitly here so nn.GELU(approximate=...) is
+        # constructed correctly and the dispatcher routes to gelu_tanh_box
+        # when needed.
+        approximate = node.kwargs.get('approximate', 'none')
+        if (len(node.args) > 1
+                and not isinstance(node.args[1], fx.Node)):
+            approximate = node.args[1]
+        if approximate not in ('none', 'tanh'):
+            raise NotImplementedError(
+                f"F.gelu: unsupported approximate='{approximate}' "
+                f"(expected 'none' or 'tanh')."
+            )
+        return nn.GELU(approximate=approximate)
 
     if fn is torch.flatten:
         start_dim = node.kwargs.get('start_dim', 1)
@@ -759,14 +781,62 @@ def _handle_multi_input_op(
         softmax_attention_reach,
     )
 
-    # Gather one set-stream per fx.Node argument (positional then keyword).
+    # Gather one set-stream per fx.Node argument.
+    #
+    # PR-1 audit C2: the previous code walked ``node.args + node.kwargs``
+    # in insertion order and blindly bound ``streams[0..2]`` as Q/K/V for
+    # SoftmaxAttention. A user model calling
+    # ``self.attn(query=q, value=v, key=k)`` would trace into
+    # ``node.kwargs = {'query': q, 'value': v, 'key': k}`` (Py3.7+ preserves
+    # kwargs order) and the dispatcher would silently compute
+    # ``softmax(q @ v^T / sqrt(d)) @ k`` instead of
+    # ``softmax(q @ k^T / sqrt(d)) @ v`` — wrong function, unsound reach
+    # whenever K-bounds ≠ V-bounds.
+    #
+    # Fix: bind via ``inspect.signature(layer.forward).bind(*args, **kwargs)``
+    # for SoftmaxAttention so streams[0..2] correspond to the declared
+    # ``query``/``key``/``value`` parameters regardless of how the caller
+    # passed them. Other multi-input layers fall back to the old positional
+    # order (DagAdd/DagConcat are commutative under their semantics or
+    # explicitly positional).
+    import inspect as _inspect
     streams: List[List] = []
-    for arg in node.args:
-        if isinstance(arg, fx.Node) and arg.name in node_values:
-            streams.append(node_values[arg.name])
-    for _, kwarg in node.kwargs.items():
-        if isinstance(kwarg, fx.Node) and kwarg.name in node_values:
-            streams.append(node_values[kwarg.name])
+    declared_param_order: Optional[List[str]] = None
+    try:
+        from n2v.nn.layers.softmax_attention import SoftmaxAttention as _SA
+    except Exception:  # pragma: no cover -- defensive only
+        _SA = None
+    if _SA is not None and isinstance(module, _SA):
+        # Signature-aware bind for SoftmaxAttention.
+        sig = _inspect.signature(module.forward)
+        try:
+            bound = sig.bind(*node.args, **node.kwargs)
+            bound.apply_defaults()
+        except TypeError:
+            bound = None
+        if bound is not None:
+            declared_param_order = list(sig.parameters.keys())
+            for pname in declared_param_order:
+                if pname not in bound.arguments:
+                    continue
+                a = bound.arguments[pname]
+                if isinstance(a, fx.Node) and a.name in node_values:
+                    streams.append(node_values[a.name])
+        else:
+            # Fallback: insertion order.
+            for arg in node.args:
+                if isinstance(arg, fx.Node) and arg.name in node_values:
+                    streams.append(node_values[arg.name])
+            for _, kwarg in node.kwargs.items():
+                if isinstance(kwarg, fx.Node) and kwarg.name in node_values:
+                    streams.append(node_values[kwarg.name])
+    else:
+        for arg in node.args:
+            if isinstance(arg, fx.Node) and arg.name in node_values:
+                streams.append(node_values[arg.name])
+        for _, kwarg in node.kwargs.items():
+            if isinstance(kwarg, fx.Node) and kwarg.name in node_values:
+                streams.append(node_values[kwarg.name])
 
     if len(streams) < 2:
         # Not a multi-input call; let the single-input dispatcher handle it.

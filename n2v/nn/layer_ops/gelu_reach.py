@@ -29,16 +29,35 @@ from n2v.nn.layer_ops._image_shape import apply_box_lift_star
 
 
 # Exact erf-form constants.
-_GELU_X_MIN = -0.7517916    # x where erf-GELU attains its global min
-_GELU_F_MIN = -0.169972     # erf-GELU(x_min). Rounded AWAY from zero from
-                            # the true minimum -0.169971207 so the box
-                            # floor is a sound lower bound (T0-3 / C5).
+#
+# PR-1 audit I1: the previous X_MIN constants were the true argmin rounded
+# to only 4-7 digits. The ``contains_min = (lb <= x_min) & (ub >= x_min)``
+# point check then missed narrow intervals that actually bracket the true
+# argmin but exclude the rounded constant, producing an above-floor lower
+# bound -- unsound by ~5e-8 on Box [-0.7530, -0.7520] for the tanh form.
+#
+# Fix: use the true argmin to ~16 digits (verified against scipy's bounded
+# Brent solver with xatol = 1e-12) for the point check, and use F_MIN
+# rounded AWAY from zero from the true value as the floor. Adopt a tiny
+# guard band around X_MIN so floating-point representation of nearby
+# interval endpoints can't slip past the check.
+_GELU_X_MIN = -0.7517915237434403   # true erf-GELU argmin (scipy-verified)
+_GELU_F_MIN = -0.16997120748        # erf-GELU(x_min) rounded AWAY from zero
+                                    # from the true -0.16997120747990369.
 
 # Tanh-approximation constants. The tanh form's minimum is slightly LOWER
 # than the erf form's, so a model authored with ``nn.GELU(approximate='tanh')``
 # (GPT-2 and many HF transformers) needs its own floor.
-_GELU_TANH_X_MIN = -0.7517   # x where tanh-GELU attains its global min
-_GELU_TANH_F_MIN = -0.170041  # tanh-GELU(x_min). Rounded AWAY from zero.
+_GELU_TANH_X_MIN = -0.7524614212122555  # true tanh-GELU argmin (scipy)
+_GELU_TANH_F_MIN = -0.17004075058       # rounded AWAY from zero from
+                                        # true -0.17004075057125403.
+
+# Tiny inward-guard band: a box ``(lb, ub)`` is considered to bracket the
+# argmin if ``lb <= x_min + GUARD`` and ``ub >= x_min - GUARD``. Without
+# this, an endpoint exactly equal to ``x_min`` modulo float rounding could
+# slip outside the check. ``GUARD = 5e-12`` is well below double-precision
+# ULP at this magnitude and well below any practical reach tolerance.
+_GELU_XMIN_GUARD = 5e-12
 
 _TANH_SQRT_2_OVER_PI = sqrt(2.0 / np.pi)
 
@@ -68,7 +87,12 @@ def _gelu_box_impl(
         ub = b.ub.flatten()
         fl = forward(lb)
         fu = forward(ub)
-        contains_min = (lb <= x_min) & (ub >= x_min)
+        # PR-1 audit I1: inward-guard the point check so float rounding at
+        # box endpoints can't move them past the true argmin.
+        contains_min = (
+            (lb <= x_min + _GELU_XMIN_GUARD)
+            & (ub >= x_min - _GELU_XMIN_GUARD)
+        )
         out_lb = np.where(contains_min, f_min, np.minimum(fl, fu))
         out_ub = np.maximum(fl, fu)
         out.append(Box(out_lb.reshape(-1, 1), out_ub.reshape(-1, 1)))

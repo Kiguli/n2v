@@ -269,6 +269,191 @@ def test_fx_add_set_plus_constant_all_set_types():
         np.testing.assert_allclose(ub_o, np.array([2.0, 3.0]), atol=1e-9)
 
 
+# ------------- Activation min-location numerical drift (audit I1) ------------
+
+
+def test_activation_box_floor_is_below_true_min_on_narrow_intervals():
+    """PR-1 audit I1: GELU/SiLU min-location constants must be set so that
+    narrow boxes which BRACKET the true argmin produce a reach lower bound
+    BELOW the true minimum on the box (sound), not above it (unsound).
+
+    The previous constants used the true argmin rounded to only 4-7 digits
+    -- e.g. ``_GELU_TANH_X_MIN = -0.7517`` vs true ``-0.7524614``. The
+    point check ``(lb <= x_min) & (ub >= x_min)`` then missed narrow
+    boxes that bracketed the true argmin but excluded the rounded
+    constant, producing an above-floor lower bound.
+
+    Counterexamples (each verified ≥ 1e-12 unsound on the buggy code):
+        * GELU tanh: Box [-0.7530, -0.7520]
+        * GELU erf:  Box [-0.75179155, -0.75179]
+        * SiLU:      Box [-1.27848, -1.27840]
+
+    Pin: reach lb must be ≤ scipy's bounded minimum on the box.
+    """
+    import scipy.optimize as opt
+    from math import erf, tanh as math_tanh, sqrt
+    from n2v.nn.layer_ops.gelu_reach import gelu_box, gelu_tanh_box
+    from n2v.nn.layer_ops.silu_reach import silu_box
+
+    def _silu(x):
+        return x / (1 + np.exp(-x))
+
+    def _gelu_erf(x):
+        return 0.5 * x * (1.0 + erf(x / sqrt(2.0)))
+
+    def _gelu_tanh(x):
+        return 0.5 * x * (1.0 + math_tanh(
+            sqrt(2.0 / np.pi) * (x + 0.044715 * x ** 3)
+        ))
+
+    cases = [
+        ("silu",      silu_box,      _silu,      -1.27848, -1.27840),
+        ("gelu_erf",  gelu_box,      _gelu_erf,  -0.75179155, -0.75179),
+        ("gelu_tanh", gelu_tanh_box, _gelu_tanh, -0.75300, -0.75200),
+    ]
+    for name, reach_fn, fwd, a, b in cases:
+        box = Box(
+            np.array([[a]], dtype=np.float64),
+            np.array([[b]], dtype=np.float64),
+        )
+        out = reach_fn([box])[0]
+        lb = float(np.asarray(out.lb).flatten()[0])
+        res = opt.minimize_scalar(
+            fwd, bounds=(a, b), method="bounded",
+            options={"xatol": 1e-14},
+        )
+        assert lb <= res.fun + 1e-14, (
+            f"{name}: Box [{a}, {b}] reach lb = {lb!r} is ABOVE true min "
+            f"{res.fun!r} (delta = {lb - res.fun:.3e}). I1 unsoundness."
+        )
+
+
+# ----------------------------- F.gelu approximate kwarg leak (audit C1) -----
+
+
+def test_fx_f_gelu_approximate_tanh_kwarg_preserved():
+    """PR-1 audit C1: ``F.gelu(x, approximate='tanh')`` must route to the
+    tanh-form floor (-0.170041), not the erf-form floor (-0.169972).
+
+    The buggy implementation had ``F.gelu: nn.GELU`` in
+    ``FUNCTION_TO_MODULE_CLS``, and ``_function_node_to_module`` consulted
+    the dict first via ``cls()`` -- silently dropping ``approximate='tanh'``
+    and instantiating ``nn.GELU(approximate='none')``. The reach then routed
+    through the erf-form (floor -0.169972), an above-floor lower bound that
+    excludes true tanh-form outputs near the dip at x ~ -0.7517 -> unsound.
+
+    Pin: a Box bracketing the dip must produce a lower bound <= the
+    tanh-form floor.
+    """
+    import torch.nn.functional as F  # local: matches the production import path
+    from n2v.nn import NeuralNetwork
+    from n2v.nn.layer_ops.gelu_reach import _GELU_TANH_F_MIN
+
+    class GeluTanhFn(nn.Module):
+        def forward(self, x):
+            return F.gelu(x, approximate="tanh")
+
+    model = GeluTanhFn().eval()
+    box = _flat_box(np.array([-1.0]), np.array([-0.5]))
+    out = NeuralNetwork(model).reach(box, method="approx")
+    assert len(out) == 1
+    lb = float(np.asarray(out[0].lb).flatten()[0])
+    assert lb <= _GELU_TANH_F_MIN + 1e-9, (
+        f"F.gelu approximate='tanh' floor leaked: lb={lb!r}, "
+        f"expected <= {_GELU_TANH_F_MIN!r} (audit C1)."
+    )
+
+
+def test_fx_f_gelu_approximate_none_default_still_works():
+    """Companion: ``F.gelu(x)`` (no kwarg) must route to the erf form."""
+    import torch.nn.functional as F
+    from n2v.nn import NeuralNetwork
+    from n2v.nn.layer_ops.gelu_reach import _GELU_F_MIN
+
+    class GeluDefault(nn.Module):
+        def forward(self, x):
+            return F.gelu(x)
+
+    model = GeluDefault().eval()
+    box = _flat_box(np.array([-1.0]), np.array([-0.5]))
+    out = NeuralNetwork(model).reach(box, method="approx")
+    lb = float(np.asarray(out[0].lb).flatten()[0])
+    assert lb <= _GELU_F_MIN + 1e-9
+
+
+# ------------------ SoftmaxAttention Q/K/V kwargs binding (audit C2) ----------
+
+
+def test_fx_softmax_attention_kwargs_query_value_key_order():
+    """PR-1 audit C2: SoftmaxAttention Q/K/V binding must NOT depend on
+    Python's kwargs insertion order. Calling
+    ``self.attn(query=q, value=v, key=k)`` must produce the same reach as
+    ``self.attn(q, k, v)``; the dispatcher uses signature inspection so
+    the declared parameter names are what counts.
+
+    Before the fix, ``_handle_multi_input_op`` walked
+    ``node.args + node.kwargs`` in insertion order and blindly bound
+    ``streams[0..2]`` -- so a model calling
+    ``self.attn(query=q, value=v, key=k)`` would compute
+    ``softmax(q v^T / sqrt(d)) @ k`` instead of the true
+    ``softmax(q k^T / sqrt(d)) @ v`` whenever K-bounds != V-bounds,
+    an unsound reach silently verifying a different function.
+
+    To make the bug detectable, this test forces K-bounds != V-bounds by
+    routing different per-token boxes into K vs V via a tiny adapter
+    network, then compares the reach output of the kwarg-reordered model
+    against the positional model.
+    """
+    from n2v.nn import NeuralNetwork
+    from n2v.nn.layers.softmax_attention import SoftmaxAttention
+
+    # Use 2 tokens, d_head=2 so the streams have non-trivial K vs V structure.
+    n_tokens, d_head = 2, 2
+
+    class AttnKwargReordered(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.attn = SoftmaxAttention(d_head=d_head)
+
+        def forward(self, x):
+            q = x
+            k = x
+            v = x
+            return self.attn(query=q, value=v, key=k)
+
+    class AttnPositional(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.attn = SoftmaxAttention(d_head=d_head)
+
+        def forward(self, x):
+            return self.attn(x, x, x)
+
+    # Distinct per-element bounds so the streams are not identical.
+    box = _flat_box(
+        np.array([0.0, 0.1, 0.2, 0.3]),
+        np.array([0.5, 0.6, 0.7, 0.8]),
+    )
+    out_kw = NeuralNetwork(AttnKwargReordered().eval()).reach(
+        box, method="approx",
+    )
+    out_pos = NeuralNetwork(AttnPositional().eval()).reach(
+        box, method="approx",
+    )
+    np.testing.assert_allclose(
+        np.asarray(out_kw[0].lb).flatten(),
+        np.asarray(out_pos[0].lb).flatten(),
+        atol=1e-9,
+        err_msg="kwargs reordering produced different reach (audit C2).",
+    )
+    np.testing.assert_allclose(
+        np.asarray(out_kw[0].ub).flatten(),
+        np.asarray(out_pos[0].ub).flatten(),
+        atol=1e-9,
+        err_msg="kwargs reordering produced different reach (audit C2).",
+    )
+
+
 # ----------------------------- fx operator.getitem (tensor slice) ----------
 
 
