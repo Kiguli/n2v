@@ -722,7 +722,11 @@ def _reach_layer_box(layer: nn.Module, input_sets: List, method: str, **kwargs) 
             layer, input_sets, segment_ids=kwargs.get("segment_ids"),
         )
     elif isinstance(layer, _PatchEmbed):
-        return patch_embed_reach.patch_embed_box(layer, input_sets)
+        return patch_embed_reach.patch_embed_box(
+            layer, input_sets,
+            image_shape=kwargs.get("image_shape"),
+            image_layout=kwargs.get("image_layout", "HWC"),
+        )
 
     # ----- Phase 5: conv variants & specialty -----
     elif isinstance(layer, _TiedLinear):
@@ -839,7 +843,11 @@ def _reach_layer_hexatope(layer: nn.Module, input_sets: List, method: str, **kwa
                 f"nn.GELU(approximate={mode!r}) is not supported by reach."
             )
     elif isinstance(layer, _PatchEmbed):
-        return patch_embed_reach.patch_embed_hexatope(layer, input_sets)
+        return patch_embed_reach.patch_embed_hexatope(
+            layer, input_sets,
+            image_shape=kwargs.get("image_shape"),
+            image_layout=kwargs.get("image_layout", "HWC"),
+        )
 
     # PR-1 audit I7: CLSToken and ConcatWithFrozenSkip are fx leaves via
     # N2VTracer but previously had no Hex/Oct branches -- any end-to-end
@@ -950,7 +958,11 @@ def _reach_layer_octatope(layer: nn.Module, input_sets: List, method: str, **kwa
                 f"nn.GELU(approximate={mode!r}) is not supported by reach."
             )
     elif isinstance(layer, _PatchEmbed):
-        return patch_embed_reach.patch_embed_octatope(layer, input_sets)
+        return patch_embed_reach.patch_embed_octatope(
+            layer, input_sets,
+            image_shape=kwargs.get("image_shape"),
+            image_layout=kwargs.get("image_layout", "HWC"),
+        )
 
     # PR-1 audit I7: CLSToken and ConcatWithFrozenSkip Oct branches.
     elif isinstance(layer, _CLSToken):

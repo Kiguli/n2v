@@ -159,6 +159,112 @@ def test_linear_block_tile_across_all_set_types():
         assert lb_o.size == L * 2  # L tokens of D_out=2
 
 
+def test_patch_embed_box_multichannel_requires_image_shape_audit_I2():
+    """PR-1 audit I2: PatchEmbed Box reach with in_channels > 1 must
+    REFUSE to infer layout. The previous code silently called
+    ``ImageZono.from_bounds`` with HWC semantics, mis-permuting a
+    CHW-flat input. Fix: require explicit image_shape; raise otherwise.
+    """
+    from n2v.nn.layers import PatchEmbed
+    from n2v.nn.layer_ops import patch_embed_reach as pe
+
+    layer = PatchEmbed(
+        in_channels=3, embed_dim=4, patch_size=2,
+    ).eval()
+    # 4x4x3 = 48 elements
+    box = _flat_box(np.zeros(48), np.ones(48))
+    with pytest.raises(NotImplementedError, match="in_channels=3.*image_shape"):
+        pe.patch_embed_box(layer, [box])
+
+
+def test_patch_embed_box_with_image_shape_hwc_matches_imagezono():
+    """When ``image_shape`` is given, the Box path must produce the same
+    IBP envelope as routing the equivalent ImageZono directly."""
+    from n2v.nn.layers import PatchEmbed
+    from n2v.nn.layer_ops import patch_embed_reach as pe
+
+    torch.manual_seed(0)
+    layer = PatchEmbed(
+        in_channels=3, embed_dim=4, patch_size=2,
+    ).eval()
+    flat_lb = np.zeros(48)
+    flat_ub = np.ones(48)
+    box = _flat_box(flat_lb, flat_ub)
+    box_out = pe.patch_embed_box(
+        layer, [box],
+        image_shape=(4, 4, 3), image_layout="HWC",
+    )[0]
+    zono_in = ImageZono.from_bounds(
+        flat_lb, flat_ub, height=4, width=4, num_channels=3,
+    )
+    zono_out = pe.patch_embed_zono(layer, [zono_in])[0]
+    lb_z, ub_z = zono_out.get_bounds()
+    np.testing.assert_allclose(
+        np.asarray(box_out.lb).flatten(),
+        np.asarray(lb_z).flatten(), atol=1e-9,
+    )
+    np.testing.assert_allclose(
+        np.asarray(box_out.ub).flatten(),
+        np.asarray(ub_z).flatten(), atol=1e-9,
+    )
+
+
+def test_patch_embed_box_chw_layout_differs_from_hwc_for_multichannel():
+    """Audit I2: a CHW-flat input must be permuted to HWC before the
+    conv reach to match PyTorch forward semantics. This test asserts
+    that the CHW path differs from the HWC path when the per-channel
+    bounds differ (so the permutation is observable).
+    """
+    from n2v.nn.layers import PatchEmbed
+    from n2v.nn.layer_ops import patch_embed_reach as pe
+
+    torch.manual_seed(0)
+    layer = PatchEmbed(
+        in_channels=3, embed_dim=4, patch_size=2,
+    ).eval()
+    # 2x2x3 = 12 elements. Construct a per-channel-distinct CHW-flat
+    # box: channel 0 = [0, 0.1], channel 1 = [0.4, 0.5], channel 2 = [0.8, 0.9].
+    chw_lb = np.array(
+        [0.0, 0.0, 0.0, 0.0,  # channel 0 (4 pixels)
+         0.4, 0.4, 0.4, 0.4,  # channel 1
+         0.8, 0.8, 0.8, 0.8], # channel 2
+    )
+    chw_ub = chw_lb + 0.1
+    box = _flat_box(chw_lb, chw_ub)
+    out_hwc = pe.patch_embed_box(
+        layer, [box], image_shape=(2, 2, 3), image_layout="HWC",
+    )[0]
+    out_chw = pe.patch_embed_box(
+        layer, [box], image_shape=(2, 2, 3), image_layout="CHW",
+    )[0]
+    # The two must produce different reaches.
+    assert not np.allclose(out_hwc.lb, out_chw.lb), (
+        "HWC and CHW reaches identical -- permutation is not happening."
+    )
+
+
+def test_patch_embed_box_non_square_image_explicit_shape_works():
+    """Audit I3: non-square images must be supported via image_shape
+    kwarg. (The pre-fix code silently inferred a square side from
+    pixel count and mis-shaped non-square images.)
+    """
+    from n2v.nn.layers import PatchEmbed
+    from n2v.nn.layer_ops import patch_embed_reach as pe
+
+    # 2x8 image, 2x2 patches, 1 channel = 16 elements (pixel count IS a
+    # perfect square, so the buggy code would silently use a 4x4 image).
+    layer = PatchEmbed(
+        in_channels=1, embed_dim=4, patch_size=2,
+    ).eval()
+    box = _flat_box(np.zeros(16), np.ones(16))
+    out = pe.patch_embed_box(
+        layer, [box], image_shape=(2, 8, 1), image_layout="HWC",
+    )
+    assert len(out) == 1
+    # 2x8 image / (2x2 patch) = 1x4 = 4 tokens of dim 4 = 16 elements
+    assert out[0].dim == 16
+
+
 def test_linear_block_tile_mismatch_raises_audit_I8():
     """PR-1 audit I8: when the dispatcher (or test) declares
     ``expected_n_tokens`` and the divisibility-inferred ``L`` disagrees,

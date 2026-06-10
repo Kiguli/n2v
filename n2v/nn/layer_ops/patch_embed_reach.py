@@ -26,7 +26,7 @@ test_minimal_vit.py``).
 
 from __future__ import annotations
 
-from typing import List
+from typing import List, Tuple
 
 import numpy as np
 import torch.nn as nn
@@ -143,7 +143,24 @@ def patch_embed_star(layer: nn.Module, input_sets: List, **kwargs) -> List[Star]
     return out
 
 
-def patch_embed_box(layer: nn.Module, input_sets: List) -> List[Box]:
+def _chw_flat_to_hwc_flat(flat: np.ndarray, H: int, W: int, C: int) -> np.ndarray:
+    """Permute a flat (C, H, W) row-major vector to (H, W, C) row-major.
+
+    ``flat`` is shape ``(C*H*W, 1)`` or ``(C*H*W,)``. Returns the same
+    column-vector shape as the input.
+    """
+    flat = np.asarray(flat).reshape(-1)
+    chw = flat.reshape(C, H, W)
+    hwc = np.transpose(chw, (1, 2, 0))
+    return hwc.reshape(-1, 1)
+
+
+def patch_embed_box(
+    layer: nn.Module,
+    input_sets: List,
+    image_shape: Tuple[int, int, int] | None = None,
+    image_layout: str = "HWC",
+) -> List[Box]:
     """Box reach for PatchEmbed.
 
     Box does not carry explicit ``(H, W, C)``, but PatchEmbed.proj is a
@@ -153,15 +170,56 @@ def patch_embed_box(layer: nn.Module, input_sets: List) -> List[Box]:
     running ``patch_embed_zono``, and taking the IBP envelope of the
     result.
 
-    Raises if the flat Box dim is not ``in_channels * h * w`` for some
-    square ``h == w``; non-square inputs need explicit ImageZono
-    construction at the call site.
+    PR-1 audit I2/I3: the previous helper silently assumed
+    ``ImageZono.from_bounds(c, h, w, in_c)`` HWC-flat layout AND
+    inferred a square image side from pixel count. This was unsound
+    in two distinct ways:
+
+      * I2 (layout): A CHW-flat input (PyTorch's native flatten of a
+        (C, H, W) tensor) was reshaped as HWC by ``ImageZono.from_bounds``,
+        permuting the channels. Conv2d then operated on a permuted
+        image and the reach excluded true forward outputs. Masked in
+        PR-1 because the test fixture uses ``in_channels=1`` (HWC ==
+        CHW for C=1).
+      * I3 (shape): A non-square image (e.g. 2x8x1) whose pixel count is
+        a perfect square (16) was silently reshaped as a 4x4 image, and
+        the conv reach again excluded true outputs.
+
+    Fix: accept explicit ``image_shape=(H, W, C)`` and
+    ``image_layout`` ('HWC' or 'CHW') kwargs. When absent and
+    ``in_channels > 1``, raise -- layout is unrecoverable. When absent
+    and ``in_channels == 1``, allow the legacy square inference but
+    emit a ``UserWarning`` to make the assumption auditable (CHW ==
+    HWC for C=1 so this case is sound).
     """
+    import warnings as _warnings
     from n2v.sets.image_zono import ImageZono
     from n2v.sets import Zono
 
     proj: nn.Conv2d = layer.proj  # type: ignore[attr-defined]
     in_c = int(proj.in_channels)
+
+    if image_shape is not None:
+        H, W, C = (int(v) for v in image_shape)
+        if C != in_c:
+            raise NotImplementedError(
+                f"PatchEmbed Box reach: image_shape channels={C} "
+                f"disagrees with layer.proj.in_channels={in_c}."
+            )
+    elif in_c > 1:
+        raise NotImplementedError(
+            f"PatchEmbed Box reach: in_channels={in_c} > 1 requires "
+            f"explicit ``image_shape=(H, W, C)`` and "
+            f"``image_layout='HWC'|'CHW'`` -- flat layout is "
+            f"unrecoverable from a Box alone (audit I2/I3). Either "
+            f"pass image_shape kwarg or use ImageZono input."
+        )
+    if image_layout not in ("HWC", "CHW"):
+        raise NotImplementedError(
+            f"PatchEmbed Box reach: image_layout must be 'HWC' or "
+            f"'CHW', got {image_layout!r}."
+        )
+
     out: List[Box] = []
     for box in input_sets:
         flat = box.dim
@@ -170,17 +228,43 @@ def patch_embed_box(layer: nn.Module, input_sets: List) -> List[Box]:
                 f"PatchEmbed Box reach: flat input dim {flat} is not "
                 f"divisible by in_channels={in_c}; cannot infer H/W."
             )
-        n_pixels = flat // in_c
-        # Assume square image (the common case; explicit ImageZono is
-        # available for non-square).
-        side = int(round(n_pixels ** 0.5))
-        if side * side != n_pixels:
-            raise NotImplementedError(
-                f"PatchEmbed Box reach: cannot infer a square image of "
-                f"{n_pixels} pixels; use ImageZono input for non-square."
+        if image_shape is not None:
+            H_use, W_use = H, W
+            if H_use * W_use * in_c != flat:
+                raise NotImplementedError(
+                    f"PatchEmbed Box reach: image_shape "
+                    f"({H_use}, {W_use}, {in_c}) does not match flat "
+                    f"input dim {flat}."
+                )
+            lb_use = box.lb
+            ub_use = box.ub
+            if image_layout == "CHW":
+                lb_use = _chw_flat_to_hwc_flat(lb_use, H_use, W_use, in_c)
+                ub_use = _chw_flat_to_hwc_flat(ub_use, H_use, W_use, in_c)
+        else:
+            # in_c == 1 here; HWC == CHW so layout is moot, but warn so
+            # the square inference is auditable.
+            n_pixels = flat // in_c
+            side = int(round(n_pixels ** 0.5))
+            if side * side != n_pixels:
+                raise NotImplementedError(
+                    f"PatchEmbed Box reach: cannot infer a square image "
+                    f"of {n_pixels} pixels; pass image_shape kwarg."
+                )
+            _warnings.warn(
+                f"PatchEmbed Box reach: inferring square image "
+                f"({side}, {side}, {in_c}) from flat dim {flat} without "
+                f"an explicit image_shape kwarg. Pass "
+                f"``image_shape=({side}, {side}, {in_c})`` to silence "
+                f"this warning (see PR-1 audit I3).",
+                UserWarning, stacklevel=3,
             )
+            H_use = W_use = side
+            lb_use = box.lb
+            ub_use = box.ub
         zono_in = ImageZono.from_bounds(
-            box.lb, box.ub, height=side, width=side, num_channels=in_c,
+            lb_use, ub_use,
+            height=H_use, width=W_use, num_channels=in_c,
         )
         zono_out = _patch_embed_image_zono(layer, zono_in)
         lb, ub = zono_out.get_bounds()
@@ -196,12 +280,17 @@ def _hex_oct_lb_ub(s):
     return np.asarray(lb).reshape(-1, 1), np.asarray(ub).reshape(-1, 1)
 
 
-def patch_embed_hexatope(layer: nn.Module, input_sets: List):
+def patch_embed_hexatope(
+    layer: nn.Module,
+    input_sets: List,
+    image_shape: Tuple[int, int, int] | None = None,
+    image_layout: str = "HWC",
+):
     """Sound (box-lifted) Hexatope reach for PatchEmbed.
 
     Lifts each Hexatope to its IBP box envelope, runs ``patch_embed_box``
-    (which infers a square image shape), then constructs a fresh
-    Hexatope from the result. Loose but sound.
+    (which requires explicit image_shape for in_channels > 1; see audit
+    I2/I3), then constructs a fresh Hexatope from the result.
     """
     from n2v.sets import Hexatope
 
@@ -209,12 +298,20 @@ def patch_embed_hexatope(layer: nn.Module, input_sets: List):
     for h in input_sets:
         lb, ub = _hex_oct_lb_ub(h)
         box_in = Box(lb, ub)
-        box_out = patch_embed_box(layer, [box_in])[0]
+        box_out = patch_embed_box(
+            layer, [box_in],
+            image_shape=image_shape, image_layout=image_layout,
+        )[0]
         out.append(Hexatope.from_bounds(box_out.lb, box_out.ub))
     return out
 
 
-def patch_embed_octatope(layer: nn.Module, input_sets: List):
+def patch_embed_octatope(
+    layer: nn.Module,
+    input_sets: List,
+    image_shape: Tuple[int, int, int] | None = None,
+    image_layout: str = "HWC",
+):
     """Sound (box-lifted) Octatope reach for PatchEmbed.
 
     Same box-lift pattern as ``patch_embed_hexatope``.
@@ -225,6 +322,9 @@ def patch_embed_octatope(layer: nn.Module, input_sets: List):
     for o in input_sets:
         lb, ub = _hex_oct_lb_ub(o)
         box_in = Box(lb, ub)
-        box_out = patch_embed_box(layer, [box_in])[0]
+        box_out = patch_embed_box(
+            layer, [box_in],
+            image_shape=image_shape, image_layout=image_layout,
+        )[0]
         out.append(Octatope.from_bounds(box_out.lb, box_out.ub))
     return out
