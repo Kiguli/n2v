@@ -151,10 +151,35 @@ def test_linear_block_tile_across_all_set_types():
         (_flat_hex(box), linear_reach.linear_hexatope),
         (_flat_oct(box), linear_reach.linear_octatope),
     ):
-        out = fn(layer, [set_in])
+        # Audit I8: pass expected_n_tokens=L so the helper verifies the
+        # inferred block-tile count instead of silently inferring.
+        out = fn(layer, [set_in], expected_n_tokens=L)
         assert len(out) == 1
         lb_o, ub_o = _bounds_of(out[0])
         assert lb_o.size == L * 2  # L tokens of D_out=2
+
+
+def test_linear_block_tile_mismatch_raises_audit_I8():
+    """PR-1 audit I8: when the dispatcher (or test) declares
+    ``expected_n_tokens`` and the divisibility-inferred ``L`` disagrees,
+    the helper must raise ``NotImplementedError`` instead of silently
+    verifying a different function.
+    """
+    layer = nn.Linear(3, 2, bias=True).eval()
+    box = _flat_box(np.zeros(12), np.ones(12))   # divisibility says L=4
+    with pytest.raises(NotImplementedError, match="disagrees with"):
+        linear_reach.linear_box(layer, [box], expected_n_tokens=3)
+
+
+def test_linear_block_tile_no_n_tokens_warns_audit_I8():
+    """Audit I8: silent block-tile inference (L > 1 without an explicit
+    n_tokens signal) must emit a ``UserWarning`` so users can audit
+    when their reach is doing per-token tiling."""
+    layer = nn.Linear(3, 2, bias=True).eval()
+    box = _flat_box(np.zeros(12), np.ones(12))
+    with pytest.warns(UserWarning, match="without an explicit n_tokens"):
+        out = linear_reach.linear_box(layer, [box])
+        assert out[0].dim == 8
 
 
 # ----------------------------- PatchEmbed ------------------------------------

@@ -213,7 +213,10 @@ def _reach_layer_star(layer: nn.Module, input_sets: List, method: str, **kwargs)
     """Star set reachability through a layer."""
 
     if isinstance(layer, nn.Linear):
-        return linear_reach.linear_star(layer, input_sets)
+        return linear_reach.linear_star(
+            layer, input_sets,
+            expected_n_tokens=kwargs.get("n_tokens"),
+        )
 
     elif isinstance(layer, nn.ReLU):
         lp_solver = kwargs.get('lp_solver', 'default')
@@ -440,7 +443,10 @@ def _reach_layer_zono(layer: nn.Module, input_sets: List, method: str, **kwargs)
     """Zonotope reachability through a layer."""
 
     if isinstance(layer, nn.Linear):
-        return linear_reach.linear_zono(layer, input_sets)
+        return linear_reach.linear_zono(
+            layer, input_sets,
+            expected_n_tokens=kwargs.get("n_tokens"),
+        )
 
     elif isinstance(layer, nn.ReLU):
         return relu_reach.relu_zono_approx(input_sets)
@@ -587,7 +593,10 @@ def _reach_layer_box(layer: nn.Module, input_sets: List, method: str, **kwargs) 
     """Box reachability through a layer."""
 
     if isinstance(layer, nn.Linear):
-        return linear_reach.linear_box(layer, input_sets)
+        return linear_reach.linear_box(
+            layer, input_sets,
+            expected_n_tokens=kwargs.get("n_tokens"),
+        )
 
     elif isinstance(layer, nn.ReLU):
         return relu_reach.relu_box(input_sets)
@@ -758,7 +767,10 @@ def _reach_layer_hexatope(layer: nn.Module, input_sets: List, method: str, **kwa
         )
 
     if isinstance(layer, nn.Linear):
-        return linear_reach.linear_hexatope(layer, input_sets)
+        return linear_reach.linear_hexatope(
+            layer, input_sets,
+            expected_n_tokens=kwargs.get("n_tokens"),
+        )
 
     elif isinstance(layer, nn.ReLU):
         verbose = kwargs.get('verbose', False)
@@ -866,7 +878,10 @@ def _reach_layer_octatope(layer: nn.Module, input_sets: List, method: str, **kwa
         )
 
     if isinstance(layer, nn.Linear):
-        return linear_reach.linear_octatope(layer, input_sets)
+        return linear_reach.linear_octatope(
+            layer, input_sets,
+            expected_n_tokens=kwargs.get("n_tokens"),
+        )
 
     elif isinstance(layer, nn.ReLU):
         verbose = kwargs.get('verbose', False)
