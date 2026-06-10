@@ -82,26 +82,34 @@ def test_gelu_tanh_box(small_box):
 
 
 def test_gelu_tanh_dip_is_contained():
-    """Box reach must contain the true tanh-GELU minimum at x ≈ -0.7517.
+    """Box reach must contain the true tanh-GELU minimum at x ≈ -0.7525.
 
     Regression: pre-fix the dispatcher routed nn.GELU(approximate='tanh')
     to gelu_box (erf form) whose F_MIN -0.16997 lies ABOVE the tanh dip
-    -0.170041, so a true output exactly at the dip was excluded from the
-    reach.
+    -0.170040750, so a true output exactly at the dip was excluded from
+    the reach.
+
+    Note (audit I1 follow-up): the F_MIN constant tightened from -0.170041
+    to -0.17004075058 once the buggy x_min point check was fixed (the
+    old looser floor compensated for the rounded x_min). True tanh-GELU
+    minimum to 16 digits is -0.17004075057125403 (scipy-verified).
     """
     box = Box(np.array([[-2.0]]), np.array([[1.0]]))
     out = gelu_reach.gelu_tanh_box([box])
     assert len(out) == 1
-    assert out[0].lb.flatten()[0] <= -0.170041 + 1e-9, (
+    # True minimum at high precision (scipy bounded-Brent, xatol=1e-12).
+    true_tanh_min = -0.17004075057125403
+    assert out[0].lb.flatten()[0] <= true_tanh_min + 1e-12, (
         f"gelu_tanh_box lower bound {out[0].lb.flatten()[0]} is above the "
-        f"true tanh-GELU minimum -0.170041 -- box reach is unsound."
+        f"true tanh-GELU minimum {true_tanh_min} -- box reach is unsound."
     )
     # Cross-check that the erf box would have been unsound for tanh.
+    true_erf_min = -0.16997120747990369
     erf_box = gelu_reach.gelu_box([box])
-    assert erf_box[0].lb.flatten()[0] >= -0.169972 - 1e-9
+    assert erf_box[0].lb.flatten()[0] <= true_erf_min + 1e-12
     # Box floor for erf form is strictly above the tanh dip, demonstrating
     # the unsoundness window the dispatcher branch closes.
-    assert erf_box[0].lb.flatten()[0] > -0.170041
+    assert erf_box[0].lb.flatten()[0] > true_tanh_min
 
 
 def test_quickgelu_box(small_box):
