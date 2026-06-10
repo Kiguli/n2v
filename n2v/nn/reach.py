@@ -449,6 +449,17 @@ def _handle_graphmodule(
                             result.append(Zono(s.c + const_flat, s.V))
                         elif isinstance(s, Box):
                             result.append(Box(s.lb + const_flat, s.ub + const_flat))
+                        elif isinstance(s, (Hexatope, Octatope)):
+                            # Set + constant: box-lift, translate the IBP
+                            # envelope, re-wrap. Sound but loose; exact
+                            # Hex/Oct centre translation would require
+                            # poking at the internal basis representation.
+                            # ``estimate_ranges`` is the zero-arg IBP path
+                            # (get_bounds requires a solver kwarg).
+                            lb_s, ub_s = s.estimate_ranges()
+                            lb_s = np.asarray(lb_s).reshape(-1, 1) + const_flat
+                            ub_s = np.asarray(ub_s).reshape(-1, 1) + const_flat
+                            result.append(type(s).from_bounds(lb_s, ub_s))
                         else:
                             raise NotImplementedError(
                                 f"call_function operator.add: set + constant "
@@ -553,6 +564,21 @@ def _handle_graphmodule(
                                             s.lb[row_start:row_end],
                                             s.ub[row_start:row_end],
                                         ))
+                                    elif isinstance(s, (Hexatope, Octatope)):
+                                        # Box-lifted slice via the zero-arg
+                                        # IBP path ``estimate_ranges`` (the
+                                        # exact get_bounds requires a
+                                        # solver kwarg). Sound but loose;
+                                        # an exact row-slice would need
+                                        # surgery on the internal basis.
+                                        lb_s, ub_s = s.estimate_ranges()
+                                        lb_s = np.asarray(lb_s).reshape(-1, 1)
+                                        ub_s = np.asarray(ub_s).reshape(-1, 1)
+                                        sl_lb = lb_s[row_start:row_end]
+                                        sl_ub = ub_s[row_start:row_end]
+                                        result.append(
+                                            type(s).from_bounds(sl_lb, sl_ub),
+                                        )
                                     else:
                                         raise NotImplementedError(
                                             f"operator.getitem on "
@@ -783,23 +809,47 @@ def _handle_multi_input_op(
             # over-approximation as the Star path's box lift today,
             # but routed via the Zono machinery. Reduce each stream to
             # its IBP box, run softmax_attention_box, return as Zono.
-            def _to_box_list(set_list):
+            def _to_box_list_with_bounds(set_list):
                 box_list = []
                 for s in set_list:
-                    lb, ub = s.get_bounds()
+                    if hasattr(s, 'get_bounds'):
+                        lb, ub = s.get_bounds()
+                    else:
+                        lb, ub = s.get_ranges()
                     box_list.append(Box(
                         np.asarray(lb).reshape(-1, 1),
                         np.asarray(ub).reshape(-1, 1),
                     ))
                 return box_list
 
-            q_b = _to_box_list(q_stream)
-            k_b = _to_box_list(k_stream)
-            v_b = _to_box_list(v_stream)
+            q_b = _to_box_list_with_bounds(q_stream)
+            k_b = _to_box_list_with_bounds(k_stream)
+            v_b = _to_box_list_with_bounds(v_stream)
             box_out = softmax_attention_reach.softmax_attention_box(
                 q_b, k_b, v_b, l_q=l_q, d_v=d_v,
             )
             return [Zono.from_bounds(b.lb, b.ub) for b in box_out]
+        if set_type is Hexatope or set_type is Octatope:
+            # Same box-lift pattern as the Zono path; sound but loose.
+            # Hex/Oct use estimate_ranges (zero-arg IBP); get_bounds wants
+            # a solver kwarg.
+            def _to_box_list_hex_oct(set_list):
+                box_list = []
+                for s in set_list:
+                    lb, ub = s.estimate_ranges()
+                    box_list.append(Box(
+                        np.asarray(lb).reshape(-1, 1),
+                        np.asarray(ub).reshape(-1, 1),
+                    ))
+                return box_list
+
+            q_b = _to_box_list_hex_oct(q_stream)
+            k_b = _to_box_list_hex_oct(k_stream)
+            v_b = _to_box_list_hex_oct(v_stream)
+            box_out = softmax_attention_reach.softmax_attention_box(
+                q_b, k_b, v_b, l_q=l_q, d_v=d_v,
+            )
+            return [set_type.from_bounds(b.lb, b.ub) for b in box_out]
         return None
 
     return None

@@ -116,11 +116,12 @@ def linear_box(layer: nn.Linear, input_boxes: List[Box]) -> List[Box]:
 
     output_boxes = []
     for box in input_boxes:
-        if b is not None:
-            b_reshaped = b.reshape(-1, 1)
-            output_box = box.affine_map(W, b_reshaped)
+        W_use, b_use, _ = _maybe_block_tile_linear(W, b, box.dim)
+        if b_use is not None:
+            b_reshaped = b_use.reshape(-1, 1)
+            output_box = box.affine_map(W_use, b_reshaped)
         else:
-            output_box = box.affine_map(W)
+            output_box = box.affine_map(W_use)
         output_boxes.append(output_box)
 
     return output_boxes
@@ -142,11 +143,12 @@ def linear_hexatope(layer: nn.Linear, input_hexatopes: List[Hexatope]) -> List[H
 
     output_hexatopes = []
     for hexatope in input_hexatopes:
-        if b is not None:
-            b_reshaped = b.reshape(-1, 1)
-            output_hexatope = hexatope.affine_map(W, b_reshaped)
+        W_use, b_use, _ = _maybe_block_tile_linear(W, b, hexatope.dim)
+        if b_use is not None:
+            b_reshaped = b_use.reshape(-1, 1)
+            output_hexatope = hexatope.affine_map(W_use, b_reshaped)
         else:
-            output_hexatope = hexatope.affine_map(W)
+            output_hexatope = hexatope.affine_map(W_use)
         output_hexatopes.append(output_hexatope)
 
     return output_hexatopes
@@ -168,11 +170,12 @@ def linear_octatope(layer: nn.Linear, input_octatopes: List[Octatope]) -> List[O
 
     output_octatopes = []
     for octatope in input_octatopes:
-        if b is not None:
-            b_reshaped = b.reshape(-1, 1)
-            output_octatope = octatope.affine_map(W, b_reshaped)
+        W_use, b_use, _ = _maybe_block_tile_linear(W, b, octatope.dim)
+        if b_use is not None:
+            b_reshaped = b_use.reshape(-1, 1)
+            output_octatope = octatope.affine_map(W_use, b_reshaped)
         else:
-            output_octatope = octatope.affine_map(W)
+            output_octatope = octatope.affine_map(W_use)
         output_octatopes.append(output_octatope)
 
     return output_octatopes

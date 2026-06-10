@@ -71,64 +71,41 @@ def _permute_rows_flat(
 
 
 def _patch_embed_image_zono(layer: nn.Module, input_image_zono: ImageZono) -> Zono:
-    """Apply Conv2d via ``conv2d_zono`` then permute to token-major."""
+    """Apply Conv2d via ``conv2d_zono`` then flatten to token-major.
+
+    ``conv2d_zono`` returns an ImageZono with ``(H, W, C, n_gen)`` in V
+    and HWC-row-major flat positions. PatchEmbed's forward is
+    ``proj(x).flatten(2).transpose(1, 2)`` which produces a
+    ``(B, L=H*W, embed_dim=C)`` sequence -- i.e. token-major flat order
+    ``(token_idx) * C + c`` for ``token_idx = h * W + w``.
+
+    This token-major flat layout EQUALS the HWC-row-major flat layout
+    (worked out: ``h*W*C + w*C + c == (h*W + w) * C + c``), so simply
+    calling ``ImageZono.to_zono()`` produces the correct flat Zono. No
+    permutation is needed.
+    """
     proj: nn.Conv2d = layer.proj  # type: ignore[attr-defined]
     conv_out = conv2d_reach.conv2d_zono(proj, [input_image_zono])
     assert len(conv_out) == 1
     out_set = conv_out[0]
-    # ``conv2d_zono`` returns an ImageZono with (height, width, num_channels)
-    # in the layout matching nnv's ``(H, W, C)`` (HWC) flatten convention.
-    out_h = out_set.height
-    out_w = out_set.width
-    out_c = out_set.num_channels
-    # Build the permutation that maps the underlying HWC-flat layout to the
-    # token-major (H*W, C) layout the downstream transformer expects.
-    perm = np.empty(out_h * out_w * out_c, dtype=np.int64)
-    for h in range(out_h):
-        for w in range(out_w):
-            for c in range(out_c):
-                # Source position in HWC-major flat:
-                i_src = h * (out_w * out_c) + w * out_c + c
-                # Target position in token-major (token = h*w, feature = c):
-                i_dst = (h * out_w + w) * out_c + c
-                perm[i_dst] = i_src
-    # In this canonical layout HWC-flat order already matches token-major
-    # order (token_idx = h*out_w + w, feature = c iterating last). So perm
-    # is the identity. Keep the construction for clarity; if the
-    # underlying conv reach changes layout, only the permutation block
-    # below needs updating.
-    new_c = out_set.c[perm]
-    new_V = out_set.V[perm]
-    # Return as a flat Zono (drops the spatial structure; downstream
-    # transformer ops operate on (L, embed_dim) flat).
-    return Zono(new_c, new_V)
+    if isinstance(out_set, ImageZono):
+        return out_set.to_zono()
+    return out_set
 
 
 def _patch_embed_image_star(layer: nn.Module, input_image_star: ImageStar) -> Star:
-    """Apply Conv2d via ``conv2d_star`` then permute to token-major."""
+    """Apply Conv2d via ``conv2d_star`` then flatten to token-major.
+
+    See ``_patch_embed_image_zono`` for the layout argument.
+    ``ImageStar.to_star()`` flattens in HWC order which matches the
+    desired token-major layout.
+    """
     proj: nn.Conv2d = layer.proj  # type: ignore[attr-defined]
     star_out = conv2d_reach.conv2d_star(proj, [input_image_star])
     assert len(star_out) == 1
     out_set = star_out[0]
     if isinstance(out_set, ImageStar):
-        out_h = out_set.height
-        out_w = out_set.width
-        out_c = out_set.num_channels
-        # Permute V's rows to token-major. Same construction as the
-        # ImageZono path -- with HWC underlying flatten the permutation
-        # collapses to identity, but kept for layout-change robustness.
-        perm = np.empty(out_h * out_w * out_c, dtype=np.int64)
-        for h in range(out_h):
-            for w in range(out_w):
-                for c in range(out_c):
-                    perm[(h * out_w + w) * out_c + c] = (
-                        h * (out_w * out_c) + w * out_c + c
-                    )
-        new_V = out_set.V[perm]
-        return Star(new_V, out_set.C, out_set.d,
-                    out_set.predicate_lb, out_set.predicate_ub)
-    # If conv2d_star happened to return a flat Star already, the identity
-    # is the correct permutation.
+        return out_set.to_star()
     return out_set
 
 
@@ -167,10 +144,87 @@ def patch_embed_star(layer: nn.Module, input_sets: List, **kwargs) -> List[Star]
 
 
 def patch_embed_box(layer: nn.Module, input_sets: List) -> List[Box]:
-    """Box reach via conv2d_box; raises because conv2d_box requires
-    image dimensions that Box does not carry."""
-    raise NotImplementedError(
-        "PatchEmbed Box reach requires explicit image dimensions. "
-        "Use ImageZono or ImageStar input set so the Conv2d helper "
-        "can recover H/W/C."
-    )
+    """Box reach for PatchEmbed.
+
+    Box does not carry explicit ``(H, W, C)``, but PatchEmbed.proj is a
+    fully-affine Conv2d so we can recover a sound (loose) Box by lifting
+    each input Box to an ImageZono using the layer's known
+    ``in_channels`` and the implied image size from the Box's flat dim,
+    running ``patch_embed_zono``, and taking the IBP envelope of the
+    result.
+
+    Raises if the flat Box dim is not ``in_channels * h * w`` for some
+    square ``h == w``; non-square inputs need explicit ImageZono
+    construction at the call site.
+    """
+    from n2v.sets.image_zono import ImageZono
+    from n2v.sets import Zono
+
+    proj: nn.Conv2d = layer.proj  # type: ignore[attr-defined]
+    in_c = int(proj.in_channels)
+    out: List[Box] = []
+    for box in input_sets:
+        flat = box.dim
+        if flat % in_c != 0:
+            raise NotImplementedError(
+                f"PatchEmbed Box reach: flat input dim {flat} is not "
+                f"divisible by in_channels={in_c}; cannot infer H/W."
+            )
+        n_pixels = flat // in_c
+        # Assume square image (the common case; explicit ImageZono is
+        # available for non-square).
+        side = int(round(n_pixels ** 0.5))
+        if side * side != n_pixels:
+            raise NotImplementedError(
+                f"PatchEmbed Box reach: cannot infer a square image of "
+                f"{n_pixels} pixels; use ImageZono input for non-square."
+            )
+        zono_in = ImageZono.from_bounds(
+            box.lb, box.ub, height=side, width=side, num_channels=in_c,
+        )
+        zono_out = _patch_embed_image_zono(layer, zono_in)
+        lb, ub = zono_out.get_bounds()
+        out.append(Box(
+            np.asarray(lb).reshape(-1, 1), np.asarray(ub).reshape(-1, 1),
+        ))
+    return out
+
+
+def _hex_oct_lb_ub(s):
+    """Fast IBP (lb, ub) for Hex/Oct -- their zero-arg ``estimate_ranges``."""
+    lb, ub = s.estimate_ranges()
+    return np.asarray(lb).reshape(-1, 1), np.asarray(ub).reshape(-1, 1)
+
+
+def patch_embed_hexatope(layer: nn.Module, input_sets: List):
+    """Sound (box-lifted) Hexatope reach for PatchEmbed.
+
+    Lifts each Hexatope to its IBP box envelope, runs ``patch_embed_box``
+    (which infers a square image shape), then constructs a fresh
+    Hexatope from the result. Loose but sound.
+    """
+    from n2v.sets import Hexatope
+
+    out = []
+    for h in input_sets:
+        lb, ub = _hex_oct_lb_ub(h)
+        box_in = Box(lb, ub)
+        box_out = patch_embed_box(layer, [box_in])[0]
+        out.append(Hexatope.from_bounds(box_out.lb, box_out.ub))
+    return out
+
+
+def patch_embed_octatope(layer: nn.Module, input_sets: List):
+    """Sound (box-lifted) Octatope reach for PatchEmbed.
+
+    Same box-lift pattern as ``patch_embed_hexatope``.
+    """
+    from n2v.sets import Octatope
+
+    out = []
+    for o in input_sets:
+        lb, ub = _hex_oct_lb_ub(o)
+        box_in = Box(lb, ub)
+        box_out = patch_embed_box(layer, [box_in])[0]
+        out.append(Octatope.from_bounds(box_out.lb, box_out.ub))
+    return out

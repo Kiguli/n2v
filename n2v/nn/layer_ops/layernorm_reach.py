@@ -74,6 +74,26 @@ def _broadcast_affine(weight: np.ndarray | None, bias: np.ndarray | None, L: int
     return w, b
 
 
+def _box_lift_lb_ub(input_set):
+    """Pull fast IBP (lb, ub) from any set type.
+
+    Star/Zono/Box expose zero-arg ``get_bounds`` / ``get_ranges``.
+    Hexatope and Octatope require a solver kwarg for ``get_bounds`` /
+    ``get_ranges`` but ship a zero-arg ``estimate_ranges`` (IBP) that is
+    the canonical fast bound for box-lifting -- exactly what this
+    helper wants.
+    """
+    from n2v.sets import Hexatope, Octatope
+
+    if isinstance(input_set, (Hexatope, Octatope)):
+        lb, ub = input_set.estimate_ranges()
+    elif hasattr(input_set, "get_bounds"):
+        lb, ub = input_set.get_bounds()
+    else:
+        lb, ub = input_set.get_ranges()
+    return np.asarray(lb).reshape(-1, 1), np.asarray(ub).reshape(-1, 1)
+
+
 def layernorm_zono(layer: nn.LayerNorm, input_zonos):
     """Sound (box-lifted) Zono reach for LayerNorm.
 
@@ -88,15 +108,48 @@ def layernorm_zono(layer: nn.LayerNorm, input_zonos):
 
     out: List = []
     for z in input_zonos:
-        lb, ub = z.get_bounds()
-        box_in = Box(np.asarray(lb).reshape(-1, 1), np.asarray(ub).reshape(-1, 1))
-        box_out = layernorm_box(layer, [box_in])[0]
+        lb, ub = _box_lift_lb_ub(z)
+        box_out = layernorm_box(layer, [Box(lb, ub)])[0]
         new_zono = Zono.from_bounds(box_out.lb, box_out.ub)
         if isinstance(z, ImageZono):
             new_zono = ImageZono(
                 new_zono.c, new_zono.V, z.height, z.width, z.num_channels,
             )
         out.append(new_zono)
+    return out
+
+
+def layernorm_hexatope(layer: nn.LayerNorm, input_hexatopes):
+    """Sound (box-lifted) Hexatope reach for LayerNorm.
+
+    LayerNorm is non-affine; an exact Hex/Oct preservation would require
+    per-group reach over the 8-basis hexatope structure (analogous to the
+    per-group Star path planned at T1-1). For now we box-lift each
+    Hexatope via its IBP envelope, run ``layernorm_box``, then construct
+    a fresh Hexatope from the resulting bounds. Sound but loose.
+    """
+    from n2v.sets import Hexatope
+
+    out: List = []
+    for h in input_hexatopes:
+        lb, ub = _box_lift_lb_ub(h)
+        box_out = layernorm_box(layer, [Box(lb, ub)])[0]
+        out.append(Hexatope.from_bounds(box_out.lb, box_out.ub))
+    return out
+
+
+def layernorm_octatope(layer: nn.LayerNorm, input_octatopes):
+    """Sound (box-lifted) Octatope reach for LayerNorm.
+
+    Same box-lift pattern as ``layernorm_hexatope``; see its docstring.
+    """
+    from n2v.sets import Octatope
+
+    out: List = []
+    for o in input_octatopes:
+        lb, ub = _box_lift_lb_ub(o)
+        box_out = layernorm_box(layer, [Box(lb, ub)])[0]
+        out.append(Octatope.from_bounds(box_out.lb, box_out.ub))
     return out
 
 

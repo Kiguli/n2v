@@ -813,6 +813,22 @@ def _reach_layer_hexatope(layer: nn.Module, input_sets: List, method: str, **kwa
             layer, input_sets,
         )
 
+    # ----- Phase 1 Hexatope routes (box-lifted; ViT enable) -----
+    elif isinstance(layer, nn.LayerNorm):
+        return layernorm_reach.layernorm_hexatope(layer, input_sets)
+    elif isinstance(layer, nn.GELU):
+        mode = getattr(layer, "approximate", "none")
+        if mode == "tanh":
+            return gelu_reach.gelu_tanh_hexatope(input_sets)
+        elif mode == "none":
+            return gelu_reach.gelu_hexatope(input_sets)
+        else:
+            raise NotImplementedError(
+                f"nn.GELU(approximate={mode!r}) is not supported by reach."
+            )
+    elif isinstance(layer, _PatchEmbed):
+        return patch_embed_reach.patch_embed_hexatope(layer, input_sets)
+
     elif isinstance(layer, (nn.Identity, nn.Dropout, nn.Dropout2d, nn.Dropout3d)):
         return input_sets
 
@@ -894,6 +910,22 @@ def _reach_layer_octatope(layer: nn.Module, input_sets: List, method: str, **kwa
         return relative_position_bias_table_reach.relative_position_bias_table_octatope(
             layer, input_sets,
         )
+
+    # ----- Phase 1 Octatope routes (box-lifted; ViT enable) -----
+    elif isinstance(layer, nn.LayerNorm):
+        return layernorm_reach.layernorm_octatope(layer, input_sets)
+    elif isinstance(layer, nn.GELU):
+        mode = getattr(layer, "approximate", "none")
+        if mode == "tanh":
+            return gelu_reach.gelu_tanh_octatope(input_sets)
+        elif mode == "none":
+            return gelu_reach.gelu_octatope(input_sets)
+        else:
+            raise NotImplementedError(
+                f"nn.GELU(approximate={mode!r}) is not supported by reach."
+            )
+    elif isinstance(layer, _PatchEmbed):
+        return patch_embed_reach.patch_embed_octatope(layer, input_sets)
 
     elif isinstance(layer, (nn.Identity, nn.Dropout, nn.Dropout2d, nn.Dropout3d)):
         return input_sets
