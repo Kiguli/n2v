@@ -956,54 +956,42 @@ def test_fx_softmax_attention_cross_shaped_l_q_from_q_stream_audit_T1_5():
 
 
 def test_fx_softmax_attention_kwargs_query_value_key_order():
-    """PR-1 audit C2: SoftmaxAttention Q/K/V binding must NOT depend on
-    Python's kwargs insertion order. Calling
-    ``self.attn(query=q, value=v, key=k)`` must produce the same reach as
-    ``self.attn(q, k, v)``; the dispatcher uses signature inspection so
-    the declared parameter names are what counts.
+    """PR-1 audit C2 + math-audit 1d: SoftmaxAttention Q/K/V binding must
+    NOT depend on Python's kwargs insertion order. The wrapper signature
+    is ``forward(q, k, v, attn_mask=None)``; calling
+    ``self.attn(q=..., v=..., k=...)`` (kwargs deliberately NOT in
+    declared order) must produce the same reach as the positional call.
 
-    Before the fix, ``_handle_multi_input_op`` walked
-    ``node.args + node.kwargs`` in insertion order and blindly bound
-    ``streams[0..2]`` -- so a model calling
-    ``self.attn(query=q, value=v, key=k)`` would compute
-    ``softmax(q v^T / sqrt(d)) @ k`` instead of the true
-    ``softmax(q k^T / sqrt(d)) @ v`` whenever K-bounds != V-bounds,
-    an unsound reach silently verifying a different function.
-
-    To make the bug detectable, this test forces K-bounds != V-bounds by
-    routing different per-token boxes into K vs V via a tiny adapter
-    network, then compares the reach output of the kwarg-reordered model
-    against the positional model.
+    To make misbinding detectable, K and V are produced by DIFFERENT
+    linear maps (V is scaled by 3), so an insertion-order bind that
+    swaps k/v changes the hull bound observably.
     """
     from n2v.nn import NeuralNetwork
     from n2v.nn.layers.softmax_attention import SoftmaxAttention
 
-    # Use 2 tokens, d_head=2 so the streams have non-trivial K vs V structure.
-    n_tokens, d_head = 2, 2
+    d_head = 2
 
-    class AttnKwargReordered(nn.Module):
+    class _Base(nn.Module):
         def __init__(self):
             super().__init__()
+            self.k_proj = nn.Linear(d_head, d_head, bias=False)
+            self.v_proj = nn.Linear(d_head, d_head, bias=False)
+            with torch.no_grad():
+                self.k_proj.weight.copy_(torch.eye(d_head))
+                self.v_proj.weight.copy_(3.0 * torch.eye(d_head))
             self.attn = SoftmaxAttention(d_head=d_head)
 
+    class AttnKwargReordered(_Base):
         def forward(self, x):
-            q = x
-            k = x
-            v = x
-            return self.attn(query=q, value=v, key=k)
+            return self.attn(q=x, v=self.v_proj(x), k=self.k_proj(x))
 
-    class AttnPositional(nn.Module):
-        def __init__(self):
-            super().__init__()
-            self.attn = SoftmaxAttention(d_head=d_head)
-
+    class AttnPositional(_Base):
         def forward(self, x):
-            return self.attn(x, x, x)
+            return self.attn(x, self.k_proj(x), self.v_proj(x))
 
-    # Distinct per-element bounds so the streams are not identical.
     box = _flat_box(
-        np.array([0.0, 0.1, 0.2, 0.3]),
-        np.array([0.5, 0.6, 0.7, 0.8]),
+        np.array([0.0, 0.1]),
+        np.array([0.5, 0.6]),
     )
     out_kw = NeuralNetwork(AttnKwargReordered().eval()).reach(
         box, method="approx",
@@ -1023,6 +1011,163 @@ def test_fx_softmax_attention_kwargs_query_value_key_order():
         atol=1e-9,
         err_msg="kwargs reordering produced different reach (audit C2).",
     )
+    # The V stream is 3x the input box, so the hull ub must reflect V
+    # (ub ~ 1.8), not K (ub ~ 0.6) -- pins that v landed in the V slot.
+    assert np.asarray(out_pos[0].ub).flatten()[0] > 1.0
+
+
+def test_fx_softmax_attention_constant_v_buffer_raises_math_audit_1d():
+    """Math-audit 1d: a constant (get_attr) V buffer previously vanished
+    from the stream list and a traced attn_mask slid into the V slot --
+    executed counterexample: true output 10.0, reach [0, 0]. Now any
+    non-traced q/k/v raises, and any non-None attn_mask raises.
+    """
+    from n2v.nn import NeuralNetwork
+    from n2v.nn.layers import SoftmaxAttention
+
+    class ConstV(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.wq = nn.Linear(1, 1, bias=False)
+            self.wk = nn.Linear(1, 1, bias=False)
+            self.wm = nn.Linear(1, 1, bias=False)
+            with torch.no_grad():
+                self.wq.weight.fill_(1.0)
+                self.wk.weight.fill_(1.0)
+                self.wm.weight.fill_(0.0)
+            self.register_buffer("v_const", torch.tensor([[10.0]]))
+            self.attn = SoftmaxAttention(d_head=1)
+
+        def forward(self, x):
+            return self.attn(self.wq(x), self.wk(x), self.v_const, self.wm(x))
+
+    box = _flat_box(np.array([0.0]), np.array([0.1]))
+    with pytest.raises(NotImplementedError, match="not a traced reach stream"):
+        NeuralNetwork(ConstV().eval()).reach(box, method="approx")
+
+
+# ------------- fx set+set add: Minkowski soundness (math-audit P0) ----------
+
+
+def test_fx_add_star_residual_with_box_lifted_branch_math_audit_P0():
+    """Math-audit P0 repro 1: ``z = Wx + gelu(x)`` with ``W = -I``. The
+    GELU Star path box-lifts to fresh predicates; the previous
+    shared-predicate sum ``V1 + V2`` assumed a correlation that does
+    not exist and the true output at x = (-1,-1) escaped the reach
+    upper bound by 0.011. The fx add route now uses the Minkowski sum,
+    which is unconditionally sound.
+    """
+    from n2v.nn import NeuralNetwork
+
+    class NegSkipGelu(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.w = nn.Linear(2, 2, bias=False)
+            with torch.no_grad():
+                self.w.weight.copy_(-torch.eye(2))
+            self.act = nn.GELU()
+
+        def forward(self, x):
+            return self.w(x) + self.act(x)
+
+    model = NegSkipGelu().eval()
+    star = Star.from_bounds(
+        np.array([[-1.0], [-1.0]]), np.array([[1.0], [1.0]]),
+    )
+    out = NeuralNetwork(model).reach(star, method="approx")
+    assert len(out) == 1
+    rng = np.random.default_rng(0)
+    with torch.no_grad():
+        for _ in range(32):
+            x = rng.uniform(-1.0, 1.0, size=2).astype(np.float32)
+            y = model(torch.from_numpy(x).unsqueeze(0)).numpy().flatten()
+            assert out[0].contains(y.reshape(-1, 1)), (
+                f"true output {y} escapes the residual-add reach "
+                f"(math-audit P0)."
+            )
+    # The witness from the executed counterexample specifically:
+    with torch.no_grad():
+        y_w = model(torch.tensor([[-1.0, -1.0]])).numpy().flatten()
+    assert out[0].contains(y_w.reshape(-1, 1))
+
+
+def test_fx_add_star_exact_split_cross_product_math_audit_P0():
+    """Math-audit P0 repro 2: ``relu(x + (-1)) + relu(x + 1)`` under
+    ``method='exact'``. The previous index-``zip`` pairing of the two
+    ReLU split lists discarded the second operand's region constraints
+    and the entire true segment z in (0, 2) vanished from the reach
+    union -- a violated safety property would have verified SAFE. The
+    cross-product Minkowski pairing must contain every true output.
+    """
+    import torch.nn.functional as F
+    from n2v.nn import NeuralNetwork
+
+    class TwoRelu(nn.Module):
+        def forward(self, x):
+            return F.relu(x + (-1.0)) + F.relu(x + 1.0)
+
+    model = TwoRelu().eval()
+    star = Star.from_bounds(np.array([[-2.0]]), np.array([[2.0]]))
+    out = NeuralNetwork(model).reach(star, method="exact")
+    assert len(out) >= 1
+    with torch.no_grad():
+        for xv in (-2.0, -0.5, 0.0, 0.5, 2.0):
+            z = float(model(torch.tensor([[xv]])).item())
+            contained = any(
+                s.contains(np.array([[z]])) for s in out
+            )
+            assert contained, (
+                f"true z({xv}) = {z} not contained in any output star "
+                f"(math-audit P0 repro 2)."
+            )
+
+
+# ------- Norm Star predicate-bounds guard (math-audit Finding 1) ------------
+
+
+def test_layernorm_star_constraint_only_predicates_raises_math_audit_F1():
+    """Math-audit Finding 1: a Star constrained only by C@alpha <= d
+    (predicate_lb/ub = None) previously had [-1, 1] silently imposed --
+    unsound when feasible alpha lies outside that box (executed escape
+    0.188). The norm Star path must now refuse such stars.
+    """
+    layer = nn.LayerNorm(4, eps=1.0, elementwise_affine=False).eval()
+    V = np.hstack([np.zeros((4, 1)), np.eye(4)])
+    # alpha in [-5, 5]^4 encoded ONLY via constraints.
+    C = np.vstack([np.eye(4), -np.eye(4)])
+    d = 5.0 * np.ones((8, 1))
+    star = Star(V, C, d, None, None)
+    with pytest.raises(NotImplementedError, match="predicate_lb"):
+        layernorm_reach.layernorm_star_approx(layer, [star])
+
+
+# ------------ set+const ImageStar 4D layout guard (math-audit item 2) -------
+
+
+def test_fx_add_image_star_plus_4d_nchw_const_raises_math_audit_2():
+    """Math-audit item 2: a 4D NCHW constant (torch's natural parameter
+    shape ``(1, C, H, W)``) added to an ImageStar was reshaped
+    flat-order into (H, W, C), silently scrambling channels for C > 1.
+    Layout is ambiguous -- the handler must refuse 4D constants.
+    """
+    from n2v.nn import NeuralNetwork
+
+    class AddNCHWConst(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.register_buffer(
+                "c", torch.arange(8, dtype=torch.float32).reshape(1, 2, 2, 2),
+            )
+
+        def forward(self, x):
+            return x + self.c
+
+    star = ImageStar.from_bounds(
+        np.zeros((8, 1)), np.ones((8, 1)),
+        height=2, width=2, num_channels=2,
+    )
+    with pytest.raises(NotImplementedError, match="layout-ambiguous"):
+        NeuralNetwork(AddNCHWConst().eval()).reach(star, method="approx")
 
 
 # ----------------------------- fx operator.getitem (tensor slice) ----------

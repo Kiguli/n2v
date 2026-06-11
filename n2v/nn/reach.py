@@ -489,7 +489,7 @@ def _handle_graphmodule(
                     node_values[node.name] = current_sets
                     continue
 
-            # Multi-input wrapper modules (DagAdd, DagConcat, Concat2D, SFF,
+            # Multi-input wrapper modules (DagAdd, Concat2D, SFF,
             # SoftmaxAttention) need set lists for every input port.
             multi_result = _handle_multi_input_op(
                 module, node, node_values, set_type
@@ -567,7 +567,25 @@ def _handle_graphmodule(
                     # add. Pass the canonical name; ``_add_sets`` now
                     # raises on unrecognised op_names so future drift is
                     # loud.
-                    result = _add_sets(val_a, val_b, 'add')
+                    #
+                    # Math-audit P0: for Star/ImageStar operands this fx
+                    # route must NOT use ``_add_sets``'s shared-predicate
+                    # sum ``V1 + V2``. That sum is exact only when both
+                    # stars are parameterised by the SAME predicate
+                    # vector; the transformer Star paths box-lift through
+                    # fresh, independent predicates (GELU, LayerNorm,
+                    # attention, ...), and when the fresh nVar happens to
+                    # equal the sibling branch's nVar the add silently
+                    # assumed a correlation that does not exist.
+                    # Executed counterexample: z = Wx + gelu(x), W = -I,
+                    # x in [-1,1]^2 -- true output 0.8413 escaped the
+                    # reach upper bound 0.8300. Use the Minkowski sum
+                    # instead: for any true pair (x(alpha), y(alpha)) the
+                    # point x+y lies in S1 (+) S2, so the Minkowski sum is
+                    # unconditionally sound (independent superset),
+                    # exactly like the Zono branch. Cross-product pairing
+                    # covers exact-split multi-star lists soundly too.
+                    result = _fx_add_set_lists(val_a, val_b)
                 else:
                     # set + constant: translate the set's centre by the
                     # constant; generators unchanged.
@@ -584,6 +602,26 @@ def _handle_graphmodule(
                             # index 0); the prior new_V[:, 0:1] sliced the
                             # *W* axis and crashed via numpy broadcast
                             # against const_flat shape (flat_dim, 1).
+                            #
+                            # Math-audit item 2: a 4D NCHW const (the
+                            # natural torch parameter shape (1, C, H, W))
+                            # reshaped flat-C-order into (H, W, C)
+                            # silently scrambles channels for C > 1.
+                            # The flat/(1, L, D) cases used by the ViT
+                            # pos-embed are layout-consistent; 4D consts
+                            # are ambiguous -- refuse them.
+                            const_nd = np.asarray(const_arg)
+                            if const_nd.ndim >= 4:
+                                raise NotImplementedError(
+                                    f"operator.add '{node.name}': a "
+                                    f"{const_nd.ndim}D constant of shape "
+                                    f"{const_nd.shape} added to an "
+                                    f"ImageStar is layout-ambiguous "
+                                    f"(NCHW vs HWC); reshaping it "
+                                    f"flat-order scrambles channels. "
+                                    f"Flatten the constant to the "
+                                    f"set's HWC order explicitly."
+                                )
                             new_V = s.V.copy()
                             const_hwc = np.asarray(
                                 const_arg, dtype=np.float64,
@@ -927,20 +965,17 @@ def _handle_multi_input_op(
 
     Supported layers (and the helper they call):
       * ``n2v.nn.layers.DagAdd``                   → dag_add_reach.dag_add_box
-      * ``n2v.nn.layers.DagConcat``                → dag_concat_reach.dag_concat_box
       * ``n2v.nn.layers.Concat2D``                 → concat2d_reach.concat2d_box
       * ``n2v.nn.layers.SelectiveFeatureFusion``   → SFF_reach.selective_feature_fusion_box
       * ``n2v.nn.layers.SoftmaxAttention``         → softmax_attention_reach.softmax_attention_{box,star_approx}
     """
     # Local imports keep top-of-file import cost low and break a potential cycle.
     from n2v.nn.layers.dag_add import DagAdd
-    from n2v.nn.layers.dag_concat import DagConcat
     from n2v.nn.layers.concat2d import Concat2D
     from n2v.nn.layers.selective_feature_fusion import SelectiveFeatureFusion
     from n2v.nn.layers.softmax_attention import SoftmaxAttention
     from n2v.nn.layer_ops import (
         dag_add_reach,
-        dag_concat_reach,
         concat2d_reach,
         selective_feature_fusion_reach,
         softmax_attention_reach,
@@ -962,7 +997,7 @@ def _handle_multi_input_op(
     # for SoftmaxAttention so streams[0..2] correspond to the declared
     # ``query``/``key``/``value`` parameters regardless of how the caller
     # passed them. Other multi-input layers fall back to the old positional
-    # order (DagAdd/DagConcat are commutative under their semantics or
+    # order (DagAdd is commutative under its semantics or
     # explicitly positional).
     import inspect as _inspect
     streams: List[List] = []
@@ -973,28 +1008,54 @@ def _handle_multi_input_op(
         _SA = None
     if _SA is not None and isinstance(module, _SA):
         # Signature-aware bind for SoftmaxAttention.
+        #
+        # Math-audit 1d: the bind must inspect EVERY bound argument, not
+        # just the traced ones. Previously a ``get_attr`` constant (e.g.
+        # a frozen V buffer) was silently skipped because it never enters
+        # ``node_values``, and a traced ``attn_mask`` then slid into the
+        # V slot positionally -- executed counterexample: constant V=10,
+        # zero mask, true output 10.0, reach [0, 0]. Now: q/k/v must each
+        # be a traced stream (constant Q/K/V raises), and attn_mask must
+        # be absent/None (set-valued or constant masks are not modelled
+        # by the reach helpers; the hull bound happens to be mask-
+        # invariant for finite masks, but -inf row masks NaN the forward,
+        # so we refuse rather than rely on that accident).
         sig = _inspect.signature(module.forward)
         try:
             bound = sig.bind(*node.args, **node.kwargs)
             bound.apply_defaults()
         except TypeError:
             bound = None
-        if bound is not None:
-            declared_param_order = list(sig.parameters.keys())
-            for pname in declared_param_order:
-                if pname not in bound.arguments:
-                    continue
-                a = bound.arguments[pname]
-                if isinstance(a, fx.Node) and a.name in node_values:
-                    streams.append(node_values[a.name])
-        else:
-            # Fallback: insertion order.
-            for arg in node.args:
-                if isinstance(arg, fx.Node) and arg.name in node_values:
-                    streams.append(node_values[arg.name])
-            for _, kwarg in node.kwargs.items():
-                if isinstance(kwarg, fx.Node) and kwarg.name in node_values:
-                    streams.append(node_values[kwarg.name])
+        if bound is None:
+            raise NotImplementedError(
+                f"SoftmaxAttention '{node.name}': cannot bind call "
+                f"arguments {node.args!r} / {node.kwargs!r} against "
+                f"forward{sig} for reachability dispatch."
+            )
+        declared_param_order = list(sig.parameters.keys())
+        for pname in declared_param_order:
+            a = bound.arguments.get(pname)
+            if pname == 'attn_mask':
+                if a is not None:
+                    raise NotImplementedError(
+                        f"SoftmaxAttention '{node.name}': attn_mask is "
+                        f"not supported by the reachability helpers "
+                        f"(got {a!r}). Remove the mask or model it "
+                        f"explicitly."
+                    )
+                continue
+            # q / k / v: must be traced set-streams.
+            if isinstance(a, fx.Node) and a.name in node_values:
+                streams.append(node_values[a.name])
+            else:
+                raise NotImplementedError(
+                    f"SoftmaxAttention '{node.name}': parameter "
+                    f"'{pname}' is not a traced reach stream "
+                    f"(got {a!r}). Constant Q/K/V buffers are not "
+                    f"supported -- previously a constant here shifted "
+                    f"the remaining arguments into the wrong slots "
+                    f"and produced an unsound reach."
+                )
     else:
         for arg in node.args:
             if isinstance(arg, fx.Node) and arg.name in node_values:
@@ -1013,11 +1074,6 @@ def _handle_multi_input_op(
         if set_type is Box:
             return dag_add_reach.dag_add_box(primary, extras)
         return None  # Box only per nnVLA catalog.
-
-    if isinstance(module, DagConcat):
-        if set_type is Box:
-            return dag_concat_reach.dag_concat_box(primary, extras)
-        return None
 
     if isinstance(module, Concat2D):
         if set_type is Box:
@@ -1541,6 +1597,57 @@ def _coerce_set_types(sa: Any, sb: Any) -> Tuple[Any, Any]:
         return sa, Zono(sb.c, sb.V)
 
     return sa, sb
+
+
+def _fx_add_set_lists(sets_a: List, sets_b: List) -> List:
+    """Sound set+set addition for the fx ``operator.add`` route.
+
+    Math-audit P0: ``_add_sets``'s Star branch computes ``V1 + V2`` under a
+    shared-predicate assumption that the transformer Star paths violate
+    (box-lifted branches carry fresh, independent predicates). The
+    Minkowski sum is unconditionally sound instead: for the true value
+    ``z = x(alpha) + y(alpha)`` we have ``x(alpha) in S1`` and
+    ``y(alpha) in S2``, hence ``z in S1 (+) S2`` regardless of how the
+    two branches' predicates relate. The price is tightness (generator
+    cancellation between correlated branches is lost), never soundness.
+
+    Multi-star operand lists (e.g. from exact ReLU splits) are combined
+    by cross product: the true pair lies in some ``(S1_i, S2_j)``, so the
+    union of pairwise Minkowski sums contains every true output. This
+    also fixes the second P0 repro, where index-``zip`` pairing silently
+    discarded the second operand's region constraints and dropped entire
+    segments of the true output set.
+
+    Zono/ImageZono/Box operands delegate to ``_add_sets`` (its Minkowski
+    / interval branches are sound).
+    """
+    first_a = sets_a[0]
+    first_b = sets_b[0]
+    a_is_star = isinstance(first_a, (Star, ImageStar))
+    b_is_star = isinstance(first_b, (Star, ImageStar))
+    if not (a_is_star or b_is_star):
+        return _add_sets(sets_a, sets_b, 'add')
+
+    # Preserve ImageStar typing when both operands agree on (H, W, C).
+    def _flat(s):
+        return s.to_star() if isinstance(s, ImageStar) else s
+
+    rewrap_shape = None
+    if (isinstance(first_a, ImageStar) and isinstance(first_b, ImageStar)
+            and (first_a.height, first_a.width, first_a.num_channels)
+            == (first_b.height, first_b.width, first_b.num_channels)):
+        rewrap_shape = (
+            first_a.height, first_a.width, first_a.num_channels,
+        )
+
+    result: List = []
+    for sa in sets_a:
+        for sb in sets_b:
+            summed = _flat(sa).minkowski_sum(_flat(sb))
+            if rewrap_shape is not None:
+                summed = summed.to_image_star(*rewrap_shape)
+            result.append(summed)
+    return result
 
 
 def _add_sets(sets_a: List, sets_b: List, op_name: str) -> List:

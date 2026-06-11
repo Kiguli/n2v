@@ -40,10 +40,23 @@ def _bounds_for_z(
     pred_ub: Optional[np.ndarray],
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Box bound on ``z = V_centred @ [1, alpha]^T`` via interval arithmetic."""
-    n_var = V_centred.shape[1] - 1
     if pred_lb is None or pred_ub is None:
-        pred_lb = -np.ones((n_var, 1))
-        pred_ub = np.ones((n_var, 1))
+        # Math-audit Finding 1: defaulting the predicate box to [-1, 1]
+        # is UNSOUND for constraint-only stars (C@alpha <= d with
+        # feasible alpha outside [-1, 1]) -- executed counterexample
+        # escaped the LayerNorm reach by 0.188. Every set produced
+        # inside n2v's reach pipeline carries explicit predicate bounds
+        # (from_bounds / to_star set them); None means a user-supplied
+        # polytope star (e.g. Star.convex_hull output). Refuse rather
+        # than guess.
+        raise NotImplementedError(
+            "predicate-preserving norm reach requires explicit "
+            "predicate_lb/predicate_ub on the input Star: a star "
+            "constrained only by C@alpha <= d may have feasible "
+            "predicates outside [-1, 1], and assuming that box is "
+            "unsound. Construct the star via Star.from_bounds or "
+            "derive predicate bounds before calling reach."
+        )
     center = V_centred[:, :1]
     gens = V_centred[:, 1:]
     pos = np.where(gens >= 0, gens, 0.0)
@@ -139,12 +152,10 @@ def predicate_preserving_norm_star(
         C0 = np.zeros((0, n_var + N))
         d0 = np.zeros((0, 1))
 
-    # Predicate bounds: existing alpha + slack ∈ [-1, 1].
-    if base.predicate_lb is not None:
-        new_pred_lb = np.vstack([base.predicate_lb, -np.ones((N, 1))])
-        new_pred_ub = np.vstack([base.predicate_ub, np.ones((N, 1))])
-    else:
-        new_pred_lb = np.vstack([-np.ones((n_var, 1)), -np.ones((N, 1))])
-        new_pred_ub = np.vstack([np.ones((n_var, 1)), np.ones((N, 1))])
+    # Predicate bounds: existing alpha + slack in [-1, 1].
+    # (predicate_lb is guaranteed non-None here: _bounds_for_z raised
+    # earlier otherwise -- math-audit Finding 1.)
+    new_pred_lb = np.vstack([base.predicate_lb, -np.ones((N, 1))])
+    new_pred_ub = np.vstack([base.predicate_ub, np.ones((N, 1))])
 
     return Star(new_V, C0, d0, new_pred_lb, new_pred_ub)

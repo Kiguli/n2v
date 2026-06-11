@@ -134,8 +134,19 @@ def grn_star_approx(layer, input_stars: List[Star]) -> List[Star]:
                 new_pred_lb = np.vstack([base.predicate_lb, -np.ones((N, 1))])
                 new_pred_ub = np.vstack([base.predicate_ub, np.ones((N, 1))])
             else:
-                new_pred_lb = np.vstack([-np.ones((n_var, 1)), -np.ones((N, 1))])
-                new_pred_ub = np.vstack([np.ones((n_var, 1)), np.ones((N, 1))])
+                # Math-audit Finding 1: imposing [-1, 1] on a star whose
+                # predicates are constrained only by C@alpha <= d is
+                # unsound (feasible alpha may lie outside the box;
+                # executed GRN counterexample escaped the reach
+                # entirely). Refuse rather than guess.
+                raise NotImplementedError(
+                    "GRN star reach requires explicit predicate_lb/"
+                    "predicate_ub on the input Star; assuming a "
+                    "[-1, 1] predicate box for a constraint-only star "
+                    "is unsound. Construct the star via "
+                    "Star.from_bounds or derive predicate bounds "
+                    "before calling reach."
+                )
             new_star = Star(new_V, C0, d0, new_pred_lb, new_pred_ub)
         if is_image:
             new_star = new_star.to_image_star(s.height, s.width, s.num_channels)
