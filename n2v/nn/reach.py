@@ -9,7 +9,9 @@ and ONNX GraphModules.
 import logging
 import operator
 import time
-from typing import Any, Dict, List, Optional, Tuple, Type, Union
+import warnings
+from dataclasses import dataclass
+from typing import Any, Dict, List, Literal, Optional, Tuple, Type, Union
 
 import numpy as np
 import torch
@@ -24,13 +26,90 @@ from n2v.nn.layer_ops.dispatcher import reach_layer
 from n2v.nn.layer_ops.linear_reach import linear_hexatope, linear_octatope
 from n2v.utils.model_preprocessing import fuse_batchnorm, has_batchnorm
 from n2v.utils.bounds_precomputation import compute_intermediate_bounds
-from n2v.probabilistic import verify
+from n2v.probabilistic.conformal_reach import ConformalReachConfig, conformal_reach
+from n2v.probabilistic.flow.reach import FlowReachConfig, flow_reach
 from onnx2torch.node_converters.reshape import OnnxReshape
 from onnx2torch.node_converters.concat import OnnxConcat
 from onnx2torch.node_converters.slice import OnnxSlice, OnnxSliceV9
 from onnx2torch.node_converters.split import OnnxSplit, OnnxSplit13
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class ReachConfig:
+    """Configuration for sound reachability via ``NeuralNetwork.reach``."""
+
+    method: Literal['exact', 'approx'] = 'exact'
+    lp_solver: str = 'default'
+    verbose: Optional[str] = None
+    parallel: bool = False
+    n_workers: int = 1
+    relax_factor: float = 0.5
+    relax_method: str = 'standard'
+
+    def __post_init__(self):
+        if self.method not in ('exact', 'approx'):
+            raise ValueError(
+                f"ReachConfig.method must be 'exact' or 'approx', got {self.method!r}"
+            )
+        if self.method == 'exact' and (
+            self.relax_factor != 0.5 or self.relax_method != 'standard'
+        ):
+            warnings.warn(
+                "ReachConfig.relax_factor / relax_method are ignored for method='exact'",
+                stacklevel=2,
+            )
+        if self.n_workers < 1:
+            raise ValueError(f"ReachConfig.n_workers must be >= 1, got {self.n_workers}")
+        if not 0.0 <= self.relax_factor <= 1.0:
+            raise ValueError(
+                f"ReachConfig.relax_factor must be in [0, 1], got {self.relax_factor}"
+            )
+
+
+def _validate_reach_config(method, config, **kwargs):
+    """Reconcile ``config=`` and bare kwargs for reach dispatch."""
+    if config is not None and kwargs:
+        raise TypeError(
+            "pass either config= or method-specific kwargs, not both "
+            f"(got config={type(config).__name__} and kwargs={list(kwargs)})"
+        )
+
+    if method in ('exact', 'approx'):
+        expected_cls = ReachConfig
+    elif method == 'flow_matching':
+        expected_cls = FlowReachConfig
+    elif method == 'conformal':
+        expected_cls = ConformalReachConfig
+    else:
+        raise ValueError(
+            f"unknown reach method: {method!r}. "
+            f"Known: 'exact', 'approx', 'flow_matching', 'conformal'."
+        )
+
+    if config is None:
+        if 'method' in expected_cls.__dataclass_fields__:
+            kwargs.setdefault('method', method)
+            if kwargs['method'] != method:
+                raise TypeError(
+                    f"method in kwargs ({kwargs['method']!r}) disagrees "
+                    f"with method= argument ({method!r})"
+                )
+        return expected_cls(**kwargs)
+
+    if not isinstance(config, expected_cls):
+        raise TypeError(
+            f"method={method!r} expects {expected_cls.__name__}, "
+            f"got {type(config).__name__}"
+        )
+
+    if hasattr(config, 'method') and config.method != method:
+        raise TypeError(
+            f"config.method ({config.method!r}) disagrees with method= argument ({method!r})"
+        )
+
+    return config
 
 # Maps torch functional ops to their nn.Module equivalents.
 #   Used by _function_node_to_module to convert call_function
@@ -130,6 +209,37 @@ def reach_pytorch_model(
 
     if method == 'hybrid':
         return _reach_hybrid(model, input_set, **kwargs)
+
+    if method == 'flow_matching':
+        config = kwargs.pop('config', None)
+        config = _validate_reach_config(method, config, **kwargs)
+        return flow_reach(model, input_set, config)
+
+    if method == 'conformal':
+        if not isinstance(input_set, Box):
+            raise TypeError(
+                f"method='conformal' requires Box input, got {type(input_set).__name__}"
+            )
+        config = kwargs.pop('config', None)
+        config = _validate_reach_config(method, config, **kwargs)
+        return conformal_reach(model, input_set, config)
+
+    config = kwargs.pop('config', None)
+    if config is not None:
+        if kwargs:
+            raise TypeError(
+                "pass either config= or method-specific kwargs, not both "
+                f"(got config={type(config).__name__} and kwargs={list(kwargs)})"
+            )
+        config = _validate_reach_config(method, config)
+        kwargs = {
+            'lp_solver': config.lp_solver,
+            'verbose': config.verbose,
+            'parallel': config.parallel,
+            'n_workers': config.n_workers,
+            'relax_factor': config.relax_factor,
+            'relax_method': config.relax_method,
+        }
 
     # Auto-fuse BatchNorm layers if present
     if has_batchnorm(model):
@@ -2472,10 +2582,10 @@ def _reach_probabilistic(model: nn.Module, input_set: Any, **kwargs: Any) -> Lis
             output = model(x_tensor)
             return output.numpy()
 
-    # Run probabilistic verification
-    result = verify(
-        model=model_fn,
-        input_set=box,
+    # ``method='probabilistic'`` is the legacy alias for conformal reach.
+    result = conformal_reach(
+        model_fn,
+        box,
         m=kwargs.get('m', 8000),
         ell=kwargs.get('ell', None),
         epsilon=kwargs.get('epsilon', 0.001),
@@ -2484,7 +2594,7 @@ def _reach_probabilistic(model: nn.Module, input_set: Any, **kwargs: Any) -> Lis
         pca_components=kwargs.get('pca_components', None),
         batch_size=kwargs.get('batch_size', 100),
         seed=kwargs.get('seed', None),
-        verbose=kwargs.get('verbose', False)
+        verbose=kwargs.get('verbose', False),
     )
 
     return [result]

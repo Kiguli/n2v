@@ -341,9 +341,10 @@ class TestUntraceableModelError:
         """Error for inline nn.ReLU()(x) must suggest F.relu(x) as alternative."""
         model = InlineReLUModel()
         model.eval()
+        input_star = _make_input_star()
 
         with pytest.raises(TypeError, match="F.relu.*instead of.*nn.ReLU"):
-            NeuralNetwork(model)
+            NeuralNetwork(model).reach(input_star, method='approx')
 
 
 class TestSequentialModelParity:
@@ -377,11 +378,12 @@ class TestSequentialModelParity:
 class TestNeuralNetworkLayers:
     """Test that NeuralNetwork.layers reflects all ops after fx tracing."""
 
-    def test_inline_relu_raises_in_init(self):
-        """NeuralNetwork.__init__ must raise TypeError for inline nn.ReLU()."""
+    def test_inline_relu_raises_on_sound_reach(self):
+        """Inline nn.ReLU() trace failure must surface on sound .reach()."""
         model = InlineReLUModel()
+        input_star = _make_input_star()
         with pytest.raises(TypeError, match="F.relu"):
-            NeuralNetwork(model)
+            NeuralNetwork(model).reach(input_star, method='approx')
 
     def test_functional_relu_layer_count(self):
         """NeuralNetwork.layers must include F.relu as a layer."""
