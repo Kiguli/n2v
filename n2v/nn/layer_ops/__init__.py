@@ -22,6 +22,7 @@ from n2v.nn.layer_ops import leakyrelu_reach
 from n2v.nn.layer_ops import sigmoid_reach
 from n2v.nn.layer_ops import tanh_reach
 from n2v.nn.layer_ops.dispatcher import reach_layer
+from n2v.nn.layer_ops.registry import lookup, register
 
 __all__ = [
     "linear_reach",
@@ -38,4 +39,6 @@ __all__ = [
     "sigmoid_reach",
     "tanh_reach",
     "reach_layer",
+    "register",
+    "lookup",
 ]
