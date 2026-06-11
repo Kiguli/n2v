@@ -56,10 +56,31 @@ def test_add_with_frozen_skip(small_box):
 
 def test_concat_with_frozen_skip(small_box):
     """T1-4: single-token append. Input flat dim equals skip flat dim;
-    output dim = input + skip = 6 (legacy semantics preserved)."""
+    output dim = input + skip = 6 (legacy semantics preserved).
+
+    PR-1 audit N8: tighten from ``dim == 6`` only to the EXACT lb/ub
+    values. The prior assertion would pass a reach helper that
+    duplicated the skip, swapped lb/ub, or stacked in the wrong order.
+    Pin the canonical layout: input first, skip second.
+    """
     layer = ConcatWithFrozenSkip(skip=torch.tensor([[7.0], [8.0], [9.0]]))
     out = concat_with_frozen_skip_reach.concat_with_frozen_skip_box(layer, [small_box])
     assert out[0].dim == 6
+    # Audit N8: pin the exact concat ordering and skip values.
+    expected_lb = np.concatenate(
+        [np.asarray(small_box.lb).flatten(),
+         np.array([7.0, 8.0, 9.0])],
+    )
+    expected_ub = np.concatenate(
+        [np.asarray(small_box.ub).flatten(),
+         np.array([7.0, 8.0, 9.0])],
+    )
+    np.testing.assert_allclose(
+        np.asarray(out[0].lb).flatten(), expected_lb, atol=1e-9,
+    )
+    np.testing.assert_allclose(
+        np.asarray(out[0].ub).flatten(), expected_ub, atol=1e-9,
+    )
 
 
 def test_concat_with_frozen_skip_multi_token_raises():

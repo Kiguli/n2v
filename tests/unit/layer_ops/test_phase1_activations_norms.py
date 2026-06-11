@@ -223,6 +223,53 @@ def test_groupnorm_star_raises_on_multi_group():
         groupnorm_reach.groupnorm_star_approx(layer, [star])
 
 
+# ---------------------------------------------------------------------------
+# PR-1 audit N9: positive counterparts for the T0-4 raises. A regression
+# that raised ``NotImplementedError`` for EVERY Star input -- not just the
+# multi-token / multi-group case -- would silently pass the raise-tests
+# above but make the layer unusable. These tests pin the SINGLE-token /
+# SINGLE-group SUCCESS path so the regression case can't slip in unnoticed.
+# ---------------------------------------------------------------------------
+
+
+def test_rmsnorm_star_single_token_succeeds_audit_N9():
+    """RMSNorm Star path must SUCCEED on a single-token input (the case
+    that ``test_rmsnorm_star_raises_on_multi_token`` does NOT exercise)."""
+    layer = RMSNorm(2, eps=1e-6)
+    layer.eval()
+    lb = np.array([[0.0], [0.0]])
+    ub = np.array([[1.0], [1.0]])
+    star = Star.from_bounds(lb, ub)
+    out = rmsnorm_reach.rmsnorm_star_approx(layer, [star])
+    assert len(out) == 1
+    assert out[0].dim == 2
+
+
+def test_layernorm_star_single_token_succeeds_audit_N9():
+    """LayerNorm Star path must SUCCEED on a single-token input."""
+    layer = nn.LayerNorm(2)
+    layer.eval()
+    lb = np.array([[0.0], [0.0]])
+    ub = np.array([[1.0], [1.0]])
+    star = Star.from_bounds(lb, ub)
+    out = layernorm_reach.layernorm_star_approx(layer, [star])
+    assert len(out) == 1
+    assert out[0].dim == 2
+
+
+def test_groupnorm_star_single_group_succeeds_audit_N9():
+    """GroupNorm Star path must SUCCEED with num_groups=1 (single
+    group, where the multi-group restriction does not apply)."""
+    layer = nn.GroupNorm(num_groups=1, num_channels=4)
+    layer.eval()
+    lb = np.array([[-1.0], [-0.5], [0.0], [0.5]])
+    ub = np.array([[0.0], [0.5], [1.0], [1.5]])
+    star = Star.from_bounds(lb, ub)
+    out = groupnorm_reach.groupnorm_star_approx(layer, [star])
+    assert len(out) == 1
+    assert out[0].dim == 4
+
+
 def test_elu_raises_on_negative_alpha():
     """T0-4 (audit C-high): elu_reach assumes alpha >= 0 (monotone)."""
     box = Box(np.array([[-3.0]]), np.array([[2.0]]))

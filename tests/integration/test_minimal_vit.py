@@ -215,14 +215,16 @@ def test_minimal_vit_zono_reach_completes():
         "Concrete output max escapes reach upper bound (UNSOUND)."
 
 
-@pytest.mark.xfail(
-    reason="Star path requires the per-group LayerNorm Star reach "
-    "(PR12_FIX_LIST T1-1 / Commit 7). The Tier-0 commit raises for L>1 "
-    "until then. This xfail clears once T1-1 lands.",
-    strict=False,
-)
-def test_minimal_vit_image_star_reach_completes():
-    """Same as zono version but ImageStar input (predicate-preserving)."""
+def test_minimal_vit_image_star_reach_raises_until_t1_1_audit_N10():
+    """PR-1 audit N10: was ``xfail(strict=False)`` which passes whether
+    the test raises OR succeeds -- including an unsound XPASS where the
+    Star path silently completes with the wrong reach. Convert to
+    ``pytest.raises(NotImplementedError, match='multi-token')`` so the
+    pin is specific: the Star path MUST raise on multi-token input
+    until PR12_FIX_LIST T1-1 (per-group LayerNorm Star reach) lands.
+    When T1-1 lands, this test will fail and the assertion can be
+    replaced with the original soundness check.
+    """
     torch.manual_seed(42)
     model = MinimalViT()
     model.eval()
@@ -234,11 +236,5 @@ def test_minimal_vit_image_star_reach_completes():
     input_star = ImageStar.from_bounds(
         lb, ub, height=img_size, width=img_size, num_channels=c,
     )
-    out_sets = NeuralNetwork(model).reach(input_star, method="approx")
-
-    assert len(out_sets) == 1
-    out = out_sets[0]
-    assert out.dim == 2
-    out_lb, out_ub = out.get_ranges()
-    assert np.all(np.isfinite(out_lb.flatten()))
-    assert np.all(np.isfinite(out_ub.flatten()))
+    with pytest.raises(NotImplementedError, match="multi-token"):
+        NeuralNetwork(model).reach(input_star, method="approx")

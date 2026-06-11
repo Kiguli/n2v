@@ -606,6 +606,49 @@ def test_activation_box_floor_is_below_true_min_on_narrow_intervals():
 # ------- CLSToken / ConcatWithFrozenSkip Hex+Oct coverage (audit I7) --------
 
 
+def test_hex_oct_from_bounds_contains_box_corners_audit_N13():
+    """PR-1 audit N13: every box-lifted Hex/Oct reach helper relies on
+    ``set_type.from_bounds(lb, ub)`` producing a sound enclosure of
+    ``[lb, ub]``. The PR-1 tests only assert ``estimate_ranges``
+    round-trips closely; they never sample IN the original box and
+    verify Hex/Oct containment. A bug in ``from_bounds`` would silently
+    invalidate every box-lifted helper (PatchEmbed, CLSToken,
+    ConcatWithFrozenSkip, OverlapPatchEmbed, MixFFN, GELU/SiLU
+    Hex/Oct, etc.).
+
+    Pin: build Hex / Oct via ``from_bounds`` and check that 64 random
+    samples inside the input box are contained in the set's IBP envelope.
+    """
+    rng = np.random.default_rng(0)
+    lb = np.array([[-0.5], [0.0], [0.3], [1.2]])
+    ub = np.array([[0.5], [1.0], [0.7], [2.5]])
+
+    for cls in (Hexatope, Octatope):
+        s = cls.from_bounds(lb, ub)
+        env_lb, env_ub = s.estimate_ranges()
+        env_lb = np.asarray(env_lb).flatten()
+        env_ub = np.asarray(env_ub).flatten()
+        # IBP envelope must enclose the construction box.
+        assert np.all(env_lb <= lb.flatten() + 1e-9), (
+            f"{cls.__name__}.from_bounds envelope lb={env_lb} above "
+            f"construction lb={lb.flatten()}"
+        )
+        assert np.all(env_ub >= ub.flatten() - 1e-9), (
+            f"{cls.__name__}.from_bounds envelope ub={env_ub} below "
+            f"construction ub={ub.flatten()}"
+        )
+        # Sample inside [lb, ub]; each sample must lie inside the
+        # envelope (containment is necessary; tightness is not asserted).
+        for _ in range(64):
+            x = rng.uniform(lb.flatten(), ub.flatten())
+            assert np.all(env_lb - 1e-9 <= x), (
+                f"{cls.__name__}: sample {x} below envelope {env_lb}"
+            )
+            assert np.all(x <= env_ub + 1e-9), (
+                f"{cls.__name__}: sample {x} above envelope {env_ub}"
+            )
+
+
 def test_cls_token_hexatope_box_lifted_sound():
     """PR-1 audit I7: CLSToken Hexatope branch was previously absent in
     the dispatcher -- any end-to-end ViT with Hex reach raised through
