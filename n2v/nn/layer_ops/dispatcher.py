@@ -556,6 +556,11 @@ def _reach_layer_zono(layer: nn.Module, input_sets: List, method: str, **kwargs)
         return overlap_patch_embed_reach.overlap_patch_embed_zono(
             layer, input_sets,
         )
+    # PR-1 audit C3 follow-up: MixFFN Zono route. The helper handles all
+    # five set types; only Star/Box were wired at the dispatcher when C3
+    # first landed.
+    elif isinstance(layer, _MixFFN):
+        return mix_ffn_reach.mix_ffn_passthrough(layer, input_sets, method, **kwargs)
 
     # ----- Phase 1 Zono routes (box-lifted, sound but loose; ViT enable) -----
     elif isinstance(layer, nn.LayerNorm):
@@ -872,6 +877,10 @@ def _reach_layer_hexatope(layer: nn.Module, input_sets: List, method: str, **kwa
             image_shape=kwargs.get("image_shape"),
             image_layout=kwargs.get("image_layout", "HWC"),
         )
+    # PR-1 audit C3 follow-up: MixFFN Hexatope route (box-lifted inside
+    # the helper).
+    elif isinstance(layer, _MixFFN):
+        return mix_ffn_reach.mix_ffn_passthrough(layer, input_sets, method, **kwargs)
 
     # PR-1 audit I7: CLSToken and ConcatWithFrozenSkip are fx leaves via
     # N2VTracer but previously had no Hex/Oct branches -- any end-to-end
@@ -993,6 +1002,10 @@ def _reach_layer_octatope(layer: nn.Module, input_sets: List, method: str, **kwa
             image_shape=kwargs.get("image_shape"),
             image_layout=kwargs.get("image_layout", "HWC"),
         )
+    # PR-1 audit C3 follow-up: MixFFN Octatope route (box-lifted inside
+    # the helper).
+    elif isinstance(layer, _MixFFN):
+        return mix_ffn_reach.mix_ffn_passthrough(layer, input_sets, method, **kwargs)
 
     # PR-1 audit I7: CLSToken and ConcatWithFrozenSkip Oct branches.
     elif isinstance(layer, _CLSToken):

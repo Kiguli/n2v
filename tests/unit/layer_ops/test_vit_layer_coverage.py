@@ -229,6 +229,38 @@ def test_mix_ffn_zono_end_to_end_audit_C3():
         )
 
 
+def test_mix_ffn_dispatcher_routes_zono_hex_oct_audit_C3_followup():
+    """Final-review follow-up to audit C3: the helper supported all five
+    set types but the DISPATCHER only routed Star and Box -- Zono /
+    Hex / Oct fell through to ``_registry_lookup`` ->
+    ``NotImplementedError``. The original C3 test called
+    ``mix_ffn_passthrough`` directly, which is exactly how the gap
+    stayed invisible. This test goes through ``dispatcher.reach_layer``
+    so the route itself is pinned.
+    """
+    from n2v.nn.layers.mix_ffn import MixFFN
+
+    torch.manual_seed(0)
+    L, dim, hidden = 4, 2, 4
+    layer = MixFFN(dim=dim, hidden_dim=hidden).eval()
+
+    lb_vec = np.linspace(0.0, 0.1, L * dim)
+    ub_vec = lb_vec + 0.05
+    box = _flat_box(lb_vec, ub_vec)
+
+    for set_in in (_flat_zono(box), _flat_hex(box), _flat_oct(box)):
+        out = dispatcher.reach_layer(
+            layer, [set_in], "approx", n_tokens=L,
+        )
+        assert len(out) == 1
+        lb_o, ub_o = _bounds_of(out[0])
+        assert lb_o.size == L * dim, (
+            f"{type(set_in).__name__}: expected dim {L * dim}, "
+            f"got {lb_o.size}"
+        )
+        assert np.all(np.isfinite(lb_o)) and np.all(np.isfinite(ub_o))
+
+
 def test_mix_ffn_missing_n_tokens_raises_audit_C3():
     """Audit C3: MixFFN reach without an explicit ``n_tokens`` signal
     must raise -- the dwconv shape is unrecoverable from a flat set.
