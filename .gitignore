@@ -62,3 +62,5 @@ examples/Research
 
 # Internal examples
 .examples/
+# PR-1 audit M2: registry-coverage matrix is a CI artefact (regenerated)
+tests/unit/coverage_matrix.txt
