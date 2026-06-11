@@ -79,12 +79,16 @@ def _bounds_of(s):
 
 
 def test_layernorm_box_star_zono_hex_oct_single_token():
+    """Audit N7/N11: previously asserted only ``isfinite`` -- a vacuous
+    ``[-inf, +inf]`` envelope would pass. Now: assert Monte-Carlo
+    containment of 32 random forward samples in the reach bounds.
+    """
     layer = nn.LayerNorm(4)
     layer.eval()
     lb = np.array([-1.0, -0.5, 0.0, 0.5])
     ub = np.array([0.0, 0.5, 1.0, 1.5])
     box = _flat_box(lb, ub)
-    for set_obj, helper in (
+    for set_in, helper in (
         (box, lambda: layernorm_reach.layernorm_box(layer, [box])),
         (_flat_star(box), lambda: layernorm_reach.layernorm_star_approx(layer, [_flat_star(box)])),
         (_flat_zono(box), lambda: layernorm_reach.layernorm_zono(layer, [_flat_zono(box)])),
@@ -96,6 +100,14 @@ def test_layernorm_box_star_zono_hex_oct_single_token():
         lb_o, ub_o = _bounds_of(out[0])
         assert np.all(np.isfinite(lb_o)) and np.all(np.isfinite(ub_o))
         assert lb_o.size == 4
+
+    # N11/M4: Monte-Carlo concrete-forward containment (Box path; others
+    # cover the same forward via their box envelopes).
+    pytest.assert_reach_contains_forward(
+        layer, lb, ub,
+        lambda lay, sets: layernorm_reach.layernorm_box(lay, sets),
+        n_samples=32, input_shape=(1, 4),
+    )
 
 
 # ----------------------------- GELU (erf + tanh) -----------------------------
@@ -157,6 +169,18 @@ def test_linear_block_tile_across_all_set_types():
         assert len(out) == 1
         lb_o, ub_o = _bounds_of(out[0])
         assert lb_o.size == L * 2  # L tokens of D_out=2
+
+    # Audit N3/N11: assert per-token concrete-forward correspondence.
+    # A transposed ``kron(W, I_L)`` (vs the correct ``kron(I_L, W)``)
+    # would pass the shape assertion above but fail this MC check.
+    pytest.assert_reach_contains_forward(
+        layer,
+        np.zeros(in_dim), np.ones(in_dim),
+        lambda lay, sets: linear_reach.linear_box(
+            lay, sets, expected_n_tokens=L,
+        ),
+        n_samples=32, input_shape=(1, L, 3),
+    )
 
 
 def test_mix_ffn_zono_end_to_end_audit_C3():
@@ -677,6 +701,73 @@ def test_concat_with_frozen_skip_octatope_box_lifted_sound():
 # ----------------------------- F.gelu approximate kwarg leak (audit C1) -----
 
 
+def test_fx_add_set_plus_set_two_stream_audit_N12():
+    """PR-1 audit N12: the existing operator.add tests only exercise
+    set+const. The set+set branch (two independent reach streams added
+    at a residual) was untested in test_vit_layer_coverage. A bug in
+    ``_add_sets`` (e.g. sign flip) would not be caught by any other
+    test in this file. Pin: a model ``y = a(x) + b(x)`` must MC-contain
+    forward samples.
+    """
+    class TwoStreamAdd(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.a = nn.Linear(3, 3, bias=False)
+            self.b = nn.Linear(3, 3, bias=False)
+            torch.manual_seed(7)
+            # Non-trivial weights so a sign flip would show up.
+            with torch.no_grad():
+                self.a.weight.copy_(torch.tensor(
+                    [[0.5, -0.2, 0.0],
+                     [0.0, 0.3, 0.1],
+                     [-0.1, 0.0, 0.4]],
+                ))
+                self.b.weight.copy_(torch.tensor(
+                    [[0.1, 0.0, -0.2],
+                     [-0.3, 0.2, 0.0],
+                     [0.0, -0.1, 0.5]],
+                ))
+
+        def forward(self, x):
+            return self.a(x) + self.b(x)
+
+    from n2v.nn import NeuralNetwork
+    model = TwoStreamAdd().eval()
+    lb = np.array([0.0, 0.0, 0.0])
+    ub = np.array([1.0, 1.0, 1.0])
+
+    def _reach(layer, sets):
+        return NeuralNetwork(model).reach(sets[0], method="approx")
+
+    pytest.assert_reach_contains_forward(
+        model, lb, ub, _reach, n_samples=32, input_shape=(1, 3),
+    )
+
+
+def test_patch_embed_box_mc_containment_audit_N2():
+    """Audit N2: the existing PatchEmbed tests assert shape/finiteness
+    only -- a constant-output reach would pass. Add concrete-forward
+    MC containment with image_shape=(2, 2, 1) (square but explicit so
+    no warning fires; in_channels=1 keeps HWC==CHW so layout is moot).
+    """
+    from n2v.nn.layers import PatchEmbed
+    from n2v.nn.layer_ops import patch_embed_reach
+
+    layer = PatchEmbed(
+        in_channels=1, embed_dim=4, patch_size=2,
+    ).eval()
+    lb = np.zeros(4)
+    ub = np.full(4, 0.5)
+
+    pytest.assert_reach_contains_forward(
+        layer, lb, ub,
+        lambda lay, sets: patch_embed_reach.patch_embed_box(
+            lay, sets, image_shape=(2, 2, 1), image_layout="HWC",
+        ),
+        n_samples=24, input_shape=(1, 1, 2, 2),
+    )
+
+
 def test_fx_f_gelu_approximate_tanh_kwarg_preserved():
     """PR-1 audit C1: ``F.gelu(x, approximate='tanh')`` must route to the
     tanh-form floor (-0.170041), not the erf-form floor (-0.169972).
@@ -886,6 +977,32 @@ def test_fx_getitem_image_star_4d_V_flattens_before_slice():
     np.testing.assert_allclose(ub, [1.0, 1.0], atol=1e-9)
 
 
+def test_fx_getitem_non_trivial_batch_index_raises_audit_N1():
+    """PR-1 audit N1: ``_handle_getitem`` previously stripped
+    ``index[0]`` unconditionally so ``x[1, 0]`` was silently treated as
+    ``x[:, 0]`` -- the reach would select the wrong token of an
+    arbitrary batch element. n2v only supports batch-1 inputs, but a
+    non-trivial batch index in the user's model means the model is
+    ambiguous; we should raise rather than silently rewrite.
+    """
+    from n2v.nn import NeuralNetwork
+
+    class BadBatchSlice(nn.Module):
+        n_tokens = 2
+
+        def forward(self, x):
+            x = x.view(1, 2, 3)
+            return x[0, 0]  # explicit batch index 0 — not slice(None)
+
+    model = BadBatchSlice().eval()
+    box = _flat_box(
+        np.array([0.0, 1.0, 2.0, 10.0, 11.0, 12.0]),
+        np.array([0.5, 1.5, 2.5, 10.5, 11.5, 12.5]),
+    )
+    with pytest.raises(NotImplementedError, match="batch axis"):
+        NeuralNetwork(model).reach(box, method="approx", n_tokens=2)
+
+
 def test_fx_getitem_negative_token_idx():
     """Audit spot-check: getitem with negative token_idx (e.g. ``x[:, -1]``
     -- the canonical "select last token / CLS / DistillationToken" pattern)
@@ -1021,3 +1138,23 @@ def test_softmax_attention_multi_input_all_set_types(set_kind):
     # projections that means lb >= 0 and ub <= 1.
     assert np.all(lb_o >= 0.0 - 1e-6)
     assert np.all(ub_o <= 1.0 + 1e-6)
+
+    # Audit N4/N11: tighten beyond ``in [0,1]`` by checking concrete-forward
+    # containment against the actual model.  Use the strict-inside box
+    # ``[0.3, 0.7]`` so a stub returning ``Box([0],[1])`` would still pass
+    # the previous assertion but fail to contain forward samples outside
+    # [0.3, 0.7].  We run this MC check on Box only since it's the only
+    # set type that exercises the full set-of-streams path identically to
+    # the forward.
+    if set_kind == "Box":
+        strict_lb = np.array([0.3, 0.4])
+        strict_ub = np.array([0.6, 0.7])
+
+        def _attn_reach(layer, sets):
+            return NeuralNetwork(model).reach(sets[0], method="approx")
+
+        pytest.assert_reach_contains_forward(
+            model, strict_lb, strict_ub, _attn_reach,
+            n_samples=24,
+            input_shape=(1, 2),
+        )

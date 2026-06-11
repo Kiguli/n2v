@@ -438,7 +438,15 @@ def _handle_graphmodule(
                 kind_b, val_b = _resolve_set_or_const(arg1)
 
                 if kind_a == 'sets' and kind_b == 'sets':
-                    result = _add_sets(val_a, val_b, '+')
+                    # PR-1 audit N12: previously passed op_name='+', which
+                    # ``_add_sets`` checked against ``'add' in op_name`` and
+                    # silently fell through to the SUBTRACTION branch ->
+                    # ``y = a(x) - b(x)`` was verified instead of
+                    # ``y = a(x) + b(x)`` for every residual / two-stream
+                    # add. Pass the canonical name; ``_add_sets`` now
+                    # raises on unrecognised op_names so future drift is
+                    # loud.
+                    result = _add_sets(val_a, val_b, 'add')
                 else:
                     # set + constant: translate the set's centre by the
                     # constant; generators unchanged.
@@ -527,6 +535,26 @@ def _handle_graphmodule(
                                     f"operator.getitem '{node.name}': "
                                     f"non-tuple index {index!r} not yet "
                                     f"supported (see PR12_FIX_LIST T1-6)."
+                                )
+                            # PR-1 audit N1: the batch axis at index[0]
+                            # MUST be ``slice(None)`` (i.e. ``:``). The
+                            # previous code dropped index[0] unconditionally
+                            # so ``x[1, 0]`` was silently treated as
+                            # ``x[:, 0]`` -- the reach selected the wrong
+                            # token of an arbitrary batch element, verifying
+                            # a different function. Reject any non-trivial
+                            # batch index loudly.
+                            if not (isinstance(index[0], slice)
+                                    and index[0] == slice(None, None, None)):
+                                raise NotImplementedError(
+                                    f"operator.getitem '{node.name}': batch "
+                                    f"axis index {index[0]!r} is not "
+                                    f"``slice(None)`` (i.e. ``:``). n2v "
+                                    f"only supports batch-1 inputs; a "
+                                    f"non-trivial batch index would verify "
+                                    f"the wrong batch element. Rewrite the "
+                                    f"model so the batch axis is sliced "
+                                    f"with ``:`` only (audit N1)."
                                 )
                             # Drop the batch axis (slice(None)) at index[0].
                             # Remaining indices select tokens / features.
@@ -1412,6 +1440,23 @@ def _add_sets(sets_a: List, sets_b: List, op_name: str) -> List:
             f"{len(sets_a)} vs {len(sets_b)}"
         )
 
+    # PR-1 audit N12: tighten op_name interpretation. The old
+    # ``'add' in op_name`` matched 'add', 'Add', 'OnnxAdd' etc., but
+    # ANY non-matching string ('+', 'Subtract', 'plus') fell silently
+    # to subtraction. Only the canonical 'add' / 'sub' names are
+    # allowed; everything else raises so a future caller drift is loud.
+    if op_name in ('add', 'Add'):
+        is_add = True
+    elif op_name in ('sub', 'Sub'):
+        is_add = False
+    else:
+        raise NotImplementedError(
+            f"_add_sets: unrecognised op_name {op_name!r}; expected "
+            f"'add' / 'Add' / 'sub' / 'Sub'. Silently treating an "
+            f"unknown name as one or the other has caused silent "
+            f"unsoundness (audit N12). Update the caller."
+        )
+
     output_sets = []
 
     for sa, sb in zip(sets_a, sets_b):
@@ -1420,7 +1465,7 @@ def _add_sets(sets_a: List, sets_b: List, op_name: str) -> List:
 
         if isinstance(sa, ImageStar) and isinstance(sb, ImageStar):
             # ImageStar: element-wise V addition (shared predicates)
-            if op_name == 'add' or 'add' in op_name:
+            if is_add:
                 V_out = sa.V + sb.V
             else:
                 V_out = sa.V - sb.V
@@ -1433,7 +1478,7 @@ def _add_sets(sets_a: List, sets_b: List, op_name: str) -> List:
 
         elif isinstance(sa, Star) and isinstance(sb, Star):
             # Star: element-wise V addition (shared predicates)
-            if op_name == 'add' or 'add' in op_name:
+            if is_add:
                 V_out = sa.V + sb.V
             else:
                 V_out = sa.V - sb.V
@@ -1443,7 +1488,7 @@ def _add_sets(sets_a: List, sets_b: List, op_name: str) -> List:
 
         elif isinstance(sa, ImageZono) and isinstance(sb, ImageZono):
             # ImageZono: Minkowski sum via generator concatenation
-            if op_name == 'add' or 'add' in op_name:
+            if is_add:
                 c_out = sa.c + sb.c
                 V_out = np.hstack([sa.V, sb.V])
             else:
@@ -1455,7 +1500,7 @@ def _add_sets(sets_a: List, sets_b: List, op_name: str) -> List:
 
         elif isinstance(sa, Zono) and isinstance(sb, Zono):
             # Zono: Minkowski sum via generator concatenation
-            if op_name == 'add' or 'add' in op_name:
+            if is_add:
                 c_out = sa.c + sb.c
                 V_out = np.hstack([sa.V, sb.V])
             else:
@@ -1467,7 +1512,7 @@ def _add_sets(sets_a: List, sets_b: List, op_name: str) -> List:
 
         elif isinstance(sa, Box) and isinstance(sb, Box):
             # Box: interval arithmetic
-            if op_name == 'add' or 'add' in op_name:
+            if is_add:
                 lb_out = sa.lb + sb.lb
                 ub_out = sa.ub + sb.ub
             else:
