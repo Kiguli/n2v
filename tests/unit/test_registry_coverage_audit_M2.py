@@ -170,7 +170,7 @@ def _format_matrix(matrix: dict[str, dict[str, bool]]) -> str:
 
 
 def test_every_leaf_wrapper_has_at_least_one_dispatcher_branch_audit_M2(
-    capsys, tmp_path,
+    tmp_path,
 ):
     """PR-1 audit M2 / completeness critic missed-category #2.
 
@@ -184,7 +184,7 @@ def test_every_leaf_wrapper_has_at_least_one_dispatcher_branch_audit_M2(
     not fail -- some wrappers are deliberately Box-only per nnVLA
     catalog.
     """
-    matrix, alias_map = _coverage_matrix()
+    matrix, _ = _coverage_matrix()
     table = _format_matrix(matrix)
     # Save the matrix as a CI artefact in the pytest temp dir (Copilot
     # review: writing into the source tree leaves untracked files and
