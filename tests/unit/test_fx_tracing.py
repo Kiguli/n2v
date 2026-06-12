@@ -346,6 +346,47 @@ class TestUntraceableModelError:
         with pytest.raises(TypeError, match="F.relu.*instead of.*nn.ReLU"):
             NeuralNetwork(model).reach(input_star, method='approx')
 
+    def test_untraceable_model_allows_probabilistic_methods(self):
+        """Un-traceable models can still construct and reach via probabilistic
+        methods (which don't need the layer inventory).
+
+        Restored per Copilot review: this regression test (originally on
+        main) was dropped during the ViT-PR test rework. Regression for
+        the post-NeurIPS refactor: ``NeuralNetwork()`` used to eagerly
+        ``torch.fx``-trace the model in ``__init__``, breaking the
+        ``flow_matching`` / ``conformal`` paths for any model with
+        data-dependent control flow. ``layers`` is a lazy property —
+        probabilistic methods never read it; the trace only runs (and
+        raises) when sound methods need the layer inventory.
+        """
+        from n2v.sets import Box
+        from n2v.probabilistic import FlowReachConfig
+        import numpy as np
+        model = UntraceableModel()  # 3-D input, data-dependent ctrl flow
+        model.eval()
+
+        # Construction succeeds (no eager trace).
+        net = NeuralNetwork(model)
+        assert net._layers_cache is None, (
+            'Expected layers cache empty until first access')
+
+        # Probabilistic reach proceeds — never reads ``layers``.
+        input_box = Box(np.array([-0.1, -0.1, -0.1]),
+                        np.array([0.1, 0.1, 0.1]))
+        prob_set = net.reach(
+            input_box, method='flow_matching',
+            config=FlowReachConfig(
+                epsilon=0.001, m=200, ell=199,
+                n_train=200, flow_epochs=20, flow_config='base',
+                seed=0,
+            ),
+        )
+        assert prob_set is not None
+
+        # And reading the ``layers`` property directly does raise.
+        with pytest.raises(TypeError, match="traceable by torch.fx"):
+            _ = net.layers
+
 
 class TestSequentialModelParity:
     """Verify nn.Sequential models still work identically after the change."""

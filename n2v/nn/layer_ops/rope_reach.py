@@ -1,26 +1,38 @@
 """Rotary Positional Embedding (RoPE) reachability.
 
-For a fixed sequence position the rotation is an affine map per token:
-``x[i] = x[i] * cos + rotate(x[i]) * sin``. The implementation builds a
-block-diagonal rotation matrix and routes through :mod:`linear_reach`.
+For a fixed sequence position the rotation is an exact linear map per
+token: the feature pairs ``(i, i + d/2)`` rotate by position-dependent
+angles. In the canonical row-operator form (see :mod:`_row_affine`)::
 
-Coverage matches nnVLA: Box, Star, Zono.
+    y = A (*) x + B (*) x[perm]
+
+where for flat index ``pos*d + i`` (``i < d/2``, ``j = i + d/2``)::
+
+    A[pos*d + i] = cos[pos, i]      B[pos*d + i] = -sin[pos, i]
+    A[pos*d + j] = cos[pos, i]      B[pos*d + j] = +sin[pos, i]
+    perm swaps the two halves of each token: pos*d+i <-> pos*d+j
+
+This applies in O(n * nVar) without materialising the previous dense
+``(L*d, L*d)`` rotation matrix (Copilot review, PR #12: O(n^2) and
+infeasible at realistic transformer sizes).
+
+Coverage matches nnVLA: Box, Star, Zono, Hexatope, Octatope.
 """
 
 from __future__ import annotations
 
-from typing import List
+from typing import List, Tuple
 
 import numpy as np
-import torch
-import torch.nn as nn
 
 from n2v.sets import Box, Hexatope, Octatope, Star, Zono
-from n2v.nn.layer_ops import linear_reach
+from n2v.nn.layer_ops._row_affine import apply_row_affine
 
 
-def _rotation_matrix(layer, dim: int) -> np.ndarray:
-    """Construct the linear operator that RoPE applies to a (L*D) vector.
+def _rotation_vectors(
+    layer, dim: int,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Build ``(A, B, perm)`` for the RoPE rotation on a flat (L*d) vector.
 
     Raises ``ValueError`` if the flat input dim is not a multiple of
     ``layer.dim``, or if the implied sequence length exceeds the
@@ -44,65 +56,51 @@ def _rotation_matrix(layer, dim: int) -> np.ndarray:
         )
     half = d // 2
 
-    R = np.zeros((dim, dim), dtype=np.float64)
+    # Per-token index template.
+    i_idx = np.arange(half)
+    j_idx = i_idx + half
+
+    A = np.empty(dim, dtype=np.float64)
+    B = np.empty(dim, dtype=np.float64)
+    perm = np.empty(dim, dtype=np.int64)
     for pos in range(L):
-        c = cos[pos, :d]
-        s = sin[pos, :d]
-        start = pos * d
-        for i in range(half):
-            j = i + half
-            ci = c[i]
-            si = s[i]
-            R[start + i, start + i] = ci
-            R[start + i, start + j] = -si
-            R[start + j, start + i] = si
-            R[start + j, start + j] = ci
-    return R
+        c = cos[pos, :half]
+        s = sin[pos, :half]
+        base = pos * d
+        # First half: y_i = c_i * x_i - s_i * x_j
+        A[base + i_idx] = c
+        B[base + i_idx] = -s
+        perm[base + i_idx] = base + j_idx
+        # Second half: y_j = c_i * x_j + s_i * x_i
+        A[base + j_idx] = c
+        B[base + j_idx] = s
+        perm[base + j_idx] = base + i_idx
+    return A, B, perm
 
 
-def _make_rotation_linear(R: np.ndarray) -> nn.Linear:
-    n = R.shape[0]
-    dummy = nn.Linear(n, n, bias=False)
-    with torch.no_grad():
-        dummy.weight.copy_(torch.from_numpy(R).float())
-    return dummy
+def _apply(layer, input_sets: List) -> List:
+    out = []
+    for s in input_sets:
+        A, B, perm = _rotation_vectors(layer, s.dim)
+        out.append(apply_row_affine(s, A, B, perm))
+    return out
 
 
 def rope_star(layer, input_stars: List[Star]) -> List[Star]:
-    out: List[Star] = []
-    for s in input_stars:
-        R = _rotation_matrix(layer, s.dim)
-        out.extend(linear_reach.linear_star(_make_rotation_linear(R), [s]))
-    return out
+    return _apply(layer, input_stars)
 
 
 def rope_box(layer, input_boxes: List[Box]) -> List[Box]:
-    out: List[Box] = []
-    for b in input_boxes:
-        R = _rotation_matrix(layer, b.dim)
-        out.extend(linear_reach.linear_box(_make_rotation_linear(R), [b]))
-    return out
+    return _apply(layer, input_boxes)
 
 
 def rope_zono(layer, input_zonos: List[Zono]) -> List[Zono]:
-    out: List[Zono] = []
-    for z in input_zonos:
-        R = _rotation_matrix(layer, z.dim)
-        out.extend(linear_reach.linear_zono(_make_rotation_linear(R), [z]))
-    return out
+    return _apply(layer, input_zonos)
 
 
 def rope_hexatope(layer, input_sets: List[Hexatope]) -> List[Hexatope]:
-    out: List[Hexatope] = []
-    for s in input_sets:
-        R = _rotation_matrix(layer, s.dim)
-        out.extend(linear_reach.linear_hexatope(_make_rotation_linear(R), [s]))
-    return out
+    return _apply(layer, input_sets)
 
 
 def rope_octatope(layer, input_sets: List[Octatope]) -> List[Octatope]:
-    out: List[Octatope] = []
-    for s in input_sets:
-        R = _rotation_matrix(layer, s.dim)
-        out.extend(linear_reach.linear_octatope(_make_rotation_linear(R), [s]))
-    return out
+    return _apply(layer, input_sets)

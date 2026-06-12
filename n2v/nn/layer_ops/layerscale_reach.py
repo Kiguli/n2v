@@ -2,9 +2,12 @@
 
 ``LayerScale.forward`` broadcasts a length-``dim`` ``gamma`` across the
 last axis of its input — i.e. for an ``(L, dim)`` sequence each of the
-``L`` tokens is scaled by the same ``gamma``. The reach surrogate tiles
-``gamma`` across ``L`` to construct a flat ``L*dim``-by-``L*dim``
-diagonal linear operator, then routes through :mod:`linear_reach`.
+``L`` tokens is scaled by the same ``gamma``.
+
+The reach applies the tiled diagonal directly to each set
+representation via :mod:`_row_affine` — O(n * nVar), no dense
+``(n, n)`` matrix (Copilot review, PR #12: the previous ``np.diag``
+surrogate was O(n^2) and OOMed at transformer scale).
 
 Coverage matches nnVLA: Box, Star, Zono, Hexatope, Octatope.
 """
@@ -14,11 +17,9 @@ from __future__ import annotations
 from typing import List
 
 import numpy as np
-import torch
-import torch.nn as nn
 
 from n2v.sets import Box, Hexatope, Octatope, Star, Zono
-from n2v.nn.layer_ops import linear_reach
+from n2v.nn.layer_ops._row_affine import apply_row_affine
 
 
 def _gamma_tiled(layer, input_dim: int) -> np.ndarray:
@@ -40,48 +41,28 @@ def _gamma_tiled(layer, input_dim: int) -> np.ndarray:
     return np.tile(gamma, L)
 
 
-def _make_diag_linear(diag: np.ndarray) -> nn.Linear:
-    n = diag.size
-    dummy = nn.Linear(n, n, bias=False)
-    with torch.no_grad():
-        dummy.weight.copy_(torch.from_numpy(np.diag(diag)).float())
-    return dummy
-
-
-def _surrogate_for(layer, input_dim: int) -> nn.Linear:
-    return _make_diag_linear(_gamma_tiled(layer, input_dim))
+def _apply(layer, input_sets: List) -> List:
+    out = []
+    for s in input_sets:
+        out.append(apply_row_affine(s, _gamma_tiled(layer, s.dim)))
+    return out
 
 
 def layerscale_star(layer, input_stars: List[Star]) -> List[Star]:
-    out: List[Star] = []
-    for s in input_stars:
-        out.extend(linear_reach.linear_star(_surrogate_for(layer, s.dim), [s]))
-    return out
+    return _apply(layer, input_stars)
 
 
 def layerscale_zono(layer, input_zonos: List[Zono]) -> List[Zono]:
-    out: List[Zono] = []
-    for z in input_zonos:
-        out.extend(linear_reach.linear_zono(_surrogate_for(layer, z.dim), [z]))
-    return out
+    return _apply(layer, input_zonos)
 
 
 def layerscale_box(layer, input_boxes: List[Box]) -> List[Box]:
-    out: List[Box] = []
-    for b in input_boxes:
-        out.extend(linear_reach.linear_box(_surrogate_for(layer, b.dim), [b]))
-    return out
+    return _apply(layer, input_boxes)
 
 
 def layerscale_hexatope(layer, input_sets: List[Hexatope]) -> List[Hexatope]:
-    out: List[Hexatope] = []
-    for s in input_sets:
-        out.extend(linear_reach.linear_hexatope(_surrogate_for(layer, s.dim), [s]))
-    return out
+    return _apply(layer, input_sets)
 
 
 def layerscale_octatope(layer, input_sets: List[Octatope]) -> List[Octatope]:
-    out: List[Octatope] = []
-    for s in input_sets:
-        out.extend(linear_reach.linear_octatope(_surrogate_for(layer, s.dim), [s]))
-    return out
+    return _apply(layer, input_sets)

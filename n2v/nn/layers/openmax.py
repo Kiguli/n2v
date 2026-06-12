@@ -23,9 +23,11 @@ class OpenMax(nn.Module):
         self.num_classes = int(num_classes)
         self.alpha = int(alpha)
         # Buffers for a future Weibull-calibrated subclass; unused here.
-        self.mean_vec = nn.Parameter(torch.zeros(num_classes, num_classes), requires_grad=False)
-        self.weibull_scale = nn.Parameter(torch.ones(num_classes), requires_grad=False)
-        self.weibull_shape = nn.Parameter(torch.ones(num_classes), requires_grad=False)
+        # (Registered as true buffers, not Parameters: they are
+        # non-trainable state and must not appear in model.parameters().)
+        self.register_buffer("mean_vec", torch.zeros(num_classes, num_classes))
+        self.register_buffer("weibull_scale", torch.ones(num_classes))
+        self.register_buffer("weibull_shape", torch.ones(num_classes))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         rank = torch.argsort(x, dim=-1, descending=True)
