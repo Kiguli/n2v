@@ -152,9 +152,14 @@ def _s_curve_single_star_approx(
     varying_map = np.where(np.abs(ubs - lbs) >= 1e-10)[0]
 
     if len(varying_map) == 0:
-        # All constant — just apply function
+        # All constant — apply the function to the LP-pinned VALUES, not
+        # the center column: for constraint-pinned stars (e.g. McCormick
+        # HadamardProduct outputs, whose center column is zero and whose
+        # value lives in constrained predicate variables) func(center)
+        # is unsound. MATLAB's multiStep*_NoSplit uses f(LP bound); the
+        # per-dim constant path below (V1[constant_map, 0]) already does.
         new_V = np.zeros_like(I.V)
-        new_V[:, 0] = func(I.V[:, 0])
+        new_V[:, 0] = func(lbs)
         return Star(new_V, I.C, I.d, I.predicate_lb, I.predicate_ub)
 
     # Evaluate function and derivative at bounds
