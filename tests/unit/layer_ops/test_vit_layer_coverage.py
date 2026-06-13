@@ -380,12 +380,12 @@ def test_fx_add_set_plus_constant_all_set_types():
 
     model = AddConst().eval()
     box = _flat_box(np.array([0.0, 0.0]), np.array([1.0, 1.0]))
-    for set_in, ctor in (
-        (box, Box),
-        (_flat_star(box), Star),
-        (_flat_zono(box), Zono),
-        (_flat_hex(box), Hexatope),
-        (_flat_oct(box), Octatope),
+    for set_in in (
+        box,
+        _flat_star(box),
+        _flat_zono(box),
+        _flat_hex(box),
+        _flat_oct(box),
     ):
         out = NeuralNetwork(model).reach(set_in, method="approx")
         assert len(out) == 1
@@ -820,6 +820,28 @@ def test_layernorm_star_constraint_only_predicates_raises_math_audit_F1():
 
 
 # ------------ set+const ImageStar 4D layout guard (math-audit item 2) -------
+
+
+def test_fx_add_image_star_plus_scalar_const_copilot():
+    """Copilot review: a scalar broadcast add (``x + 1.0``) on an
+    ImageStar must tile the scalar across (H, W, C) -- the previous
+    ``const.reshape(H, W, C)`` raised ValueError on a shape-(1,)
+    constant instead of producing the sound translation.
+    """
+    from n2v.nn import NeuralNetwork
+
+    class AddScalar(nn.Module):
+        def forward(self, x):
+            return x + 1.0
+
+    star = ImageStar.from_bounds(
+        np.zeros((8, 1)), np.ones((8, 1)),
+        height=2, width=2, num_channels=2,
+    )
+    out = NeuralNetwork(AddScalar().eval()).reach(star, method="approx")[0]
+    lo, ub = out.get_ranges()
+    np.testing.assert_allclose(np.asarray(lo).flatten(), np.ones(8), atol=1e-9)
+    np.testing.assert_allclose(np.asarray(ub).flatten(), 2 * np.ones(8), atol=1e-9)
 
 
 def test_fx_add_image_star_plus_4d_nchw_const_raises_math_audit_2():

@@ -146,20 +146,6 @@ FUNCTION_TO_MODULE_CLS: Dict[type, Type[nn.Module]] = {
 }
 
 
-def _scaled_dot_product_attention_module():
-    """Lazy-construct SoftmaxAttention to avoid an import cycle at module load."""
-    from n2v.nn.layers.softmax_attention import SoftmaxAttention
-    return SoftmaxAttention()
-
-
-# Functional ops that need a parameterless wrapper module produced lazily.
-# (Separate from FUNCTION_TO_MODULE_CLS because the value here is a factory,
-# not a class, to avoid eager imports of n2v.nn.layers at the top of reach.py.)
-FUNCTION_TO_MODULE_FACTORY: dict = {
-    F.scaled_dot_product_attention: _scaled_dot_product_attention_module,
-}
-
-
 def reach_pytorch_model(
     model: nn.Module,
     input_set: Union['Star', 'Zono', 'Box', 'Hexatope', 'Octatope'],
@@ -314,9 +300,6 @@ def _function_node_to_module(
 
     if fn in FUNCTION_TO_MODULE_CLS:
         return FUNCTION_TO_MODULE_CLS[fn]()
-
-    if fn in FUNCTION_TO_MODULE_FACTORY:
-        return FUNCTION_TO_MODULE_FACTORY[fn]()
 
     # Parameterized functions
     if fn is F.leaky_relu:
@@ -599,8 +582,21 @@ def _handle_graphmodule(
                             # The flat/(1, L, D) cases used by the ViT
                             # pos-embed are layout-consistent; 4D consts
                             # are ambiguous -- refuse them.
-                            const_nd = np.asarray(const_arg)
-                            if const_nd.ndim >= 4:
+                            const_nd = np.asarray(const_arg, dtype=np.float64)
+                            hwc = (s.height, s.width, s.num_channels)
+                            if const_nd.size == 1:
+                                # Scalar broadcast add (e.g. ``x + 1.0``):
+                                # tile the scalar across (H, W, C) -- a
+                                # sound, layout-independent translation
+                                # (Copilot review).
+                                const_hwc = np.full(
+                                    hwc, float(const_nd.reshape(-1)[0]),
+                                )
+                            elif const_nd.ndim >= 4:
+                                # A 4D constant (e.g. NCHW (1, C, H, W)) is
+                                # layout-ambiguous against the ImageStar's
+                                # HWC flat layout; reshaping flat-order
+                                # would scramble channels for C > 1.
                                 raise NotImplementedError(
                                     f"operator.add '{node.name}': a "
                                     f"{const_nd.ndim}D constant of shape "
@@ -611,10 +607,16 @@ def _handle_graphmodule(
                                     f"Flatten the constant to the "
                                     f"set's HWC order explicitly."
                                 )
+                            elif const_nd.size != s.height * s.width * s.num_channels:
+                                raise NotImplementedError(
+                                    f"operator.add '{node.name}': constant "
+                                    f"of size {const_nd.size} does not "
+                                    f"match the ImageStar's H*W*C="
+                                    f"{s.height * s.width * s.num_channels}."
+                                )
+                            else:
+                                const_hwc = const_nd.reshape(hwc)
                             new_V = s.V.copy()
-                            const_hwc = np.asarray(
-                                const_arg, dtype=np.float64,
-                            ).reshape(s.height, s.width, s.num_channels)
                             new_V[..., 0] = new_V[..., 0] + const_hwc
                             result.append(ImageStar(
                                 new_V, s.C, s.d, s.predicate_lb, s.predicate_ub,

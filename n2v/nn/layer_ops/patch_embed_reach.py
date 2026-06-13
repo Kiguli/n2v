@@ -37,39 +37,6 @@ from n2v.sets.image_zono import ImageZono
 from n2v.nn.layer_ops import conv2d_reach
 
 
-def _channel_major_to_token_major_index(
-    n_channels: int, height: int, width: int,
-) -> np.ndarray:
-    """Build a permutation that takes a flat ``(C, H, W)`` (channel-major)
-    layout to ``(H*W, C)`` (token-major) layout.
-
-    The output index ``perm[i]`` gives the source row in the channel-major
-    set that should occupy position ``i`` in the token-major layout. For
-    ``C=2, H=2, W=2`` the channel-major flat order is
-    ``[c0_h0_w0, c0_h0_w1, c0_h1_w0, c0_h1_w1, c1_h0_w0, ...]`` and the
-    token-major target is
-    ``[c0_h0_w0, c1_h0_w0, c0_h0_w1, c1_h0_w1, c0_h1_w0, c1_h1_w0, ...]``.
-    """
-    # channel-major index: i_cm = c * (H*W) + h * W + w
-    # token-major index:   i_tm = (h * W + w) * C + c
-    # We want perm[i_tm] = i_cm.
-    perm = np.empty(n_channels * height * width, dtype=np.int64)
-    for c in range(n_channels):
-        for h in range(height):
-            for w in range(width):
-                i_cm = c * (height * width) + h * width + w
-                i_tm = (h * width + w) * n_channels + c
-                perm[i_tm] = i_cm
-    return perm
-
-
-def _permute_rows_flat(
-    flat_centre: np.ndarray, flat_generators: np.ndarray, perm: np.ndarray,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Permute rows of a flat (centre, generators) pair."""
-    return flat_centre[perm], flat_generators[perm]
-
-
 def _patch_embed_image_zono(layer: nn.Module, input_image_zono: ImageZono) -> Zono:
     """Apply Conv2d via ``conv2d_zono`` then flatten to token-major.
 
