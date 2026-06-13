@@ -187,10 +187,16 @@ def patch_embed_box(
 
     Fix: accept explicit ``image_shape=(H, W, C)`` and
     ``image_layout`` ('HWC' or 'CHW') kwargs. When absent and
-    ``in_channels > 1``, raise -- layout is unrecoverable. When absent
-    and ``in_channels == 1``, allow the legacy square inference but
-    emit a ``UserWarning`` to make the assumption auditable (CHW ==
-    HWC for C=1 so this case is sound).
+    ``in_channels > 1``, raise -- the channel layout is unrecoverable.
+
+    When absent and ``in_channels == 1`` the channel ambiguity is gone
+    (CHW == HWC for C == 1), but the *spatial* shape is still an
+    ASSUMPTION: a non-square grayscale image whose pixel count happens
+    to be a perfect square (e.g. 2x8 -> 16 pixels) is inferred as
+    square (4x4), which is wrong. This case therefore proceeds on the
+    square-image assumption and emits a ``UserWarning`` so the
+    assumption is auditable -- it is NOT a general soundness guarantee.
+    Pass ``image_shape`` explicitly for any non-square input.
     """
     import warnings as _warnings
     from n2v.sets.image_zono import ImageZono

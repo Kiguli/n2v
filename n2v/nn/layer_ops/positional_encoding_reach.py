@@ -22,10 +22,25 @@ from n2v.nn.layer_ops._translate import translate_set
 def _pe_vec(layer, dim: int) -> np.ndarray:
     """Slice the layer's precomputed positional table to the input dim.
 
-    Rejects inputs longer than ``max_len`` because the concrete forward
-    cannot extend beyond the precomputed table either — silently
-    padding with zeros would hide a runtime error in the model.
+    The flat input must be ``L * layer.dim`` for some sequence length
+    ``L`` (the concrete forward adds the per-position encoding across
+    the model-dim axis). Two failure modes are rejected loudly, matching
+    what the concrete forward would do:
+
+    * ``dim`` not a multiple of ``layer.dim`` -- the input cannot be a
+      ``(L, layer.dim)`` sequence, so the per-token broadcast (and this
+      reach's row slice) is undefined.
+    * ``L > max_len`` (``dim`` exceeds the precomputed table) -- there is
+      no encoding for positions beyond ``max_len``.
     """
+    model_dim = int(layer.dim)
+    if dim % model_dim != 0:
+        raise ValueError(
+            f"PositionalEncoding reach: input set dim {dim} is not a "
+            f"multiple of the model dim {model_dim}; the input cannot be "
+            f"an (L, {model_dim}) sequence and the concrete forward would "
+            f"raise a shape mismatch."
+        )
     pe = layer.pe.detach().cpu().numpy().astype(np.float64).reshape(-1)
     if pe.size < dim:
         raise ValueError(
