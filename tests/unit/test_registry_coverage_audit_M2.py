@@ -36,34 +36,24 @@ import re
 import pytest
 
 
-# Set types whose dispatcher branches we audit. Names match the
-# ``_reach_layer_<type>`` functions in dispatcher.py.
-_SET_TYPES = ("star", "zono", "box", "hexatope", "octatope")
+# Set types whose dispatcher branches we audit. The ViT layer wrappers
+# in this PR target Box / Star / Zono; the pre-existing Hexatope /
+# Octatope set types remain available for the base layers but are not
+# part of the ViT wrapper surface, so they are not audited here.
+_SET_TYPES = ("star", "zono", "box")
 
-# Wrappers known to be Box-only per the nnVLA catalog. Listed in
-# dispatcher.py docstrings; tracked here so the partial-coverage
-# warning differentiates "intended Box-only" from "missing".
-_BOX_ONLY = {
-    "DagAdd", "Concat2D", "SelectiveFeatureFusion",
-}
+# Wrappers known to be Box-only per the nnVLA catalog. (None of the ViT
+# wrappers in this PR are Box-only.)
+_BOX_ONLY = set()
 
-# Wrappers that intentionally do not need a dispatcher branch because
-# the tracer leaves them OUT of the leaf list (fx decomposes them into
-# primitives the dispatcher handles directly). See
-# ``n2v.nn._tracer._n2v_leaf_module_types._EXCLUDED``.
-_TRACER_EXCLUDED = {
-    "ParallelResidual",
-}
+# Wrappers intentionally kept OUT of the N2VTracer leaf list because fx
+# decomposes them into primitives the dispatcher handles directly.
+_TRACER_EXCLUDED = set()
 
-# Wrappers dispatched via subclass-of-stdlib-base isinstance checks
-# (e.g. ``LayerNormWrap`` is ``nn.LayerNorm`` subclass; matched by the
-# existing ``isinstance(layer, nn.LayerNorm)`` chain). These have no
-# dedicated ``_X`` alias so the source-grep matrix correctly shows them
-# as "absent", but in practice every set type covers them via the base
-# class. Documented per-wrapper so future renames are auditable.
-_VIA_PARENT_CLASS = {
-    "LayerNormWrap": "torch.nn.LayerNorm",
-}
+# Wrappers dispatched via a subclass-of-stdlib-base isinstance check
+# rather than a dedicated ``_X`` alias. (None in this PR -- the ViT
+# wrappers all have dedicated dispatcher branches.)
+_VIA_PARENT_CLASS = {}
 
 
 def _load_dispatcher_source() -> str:

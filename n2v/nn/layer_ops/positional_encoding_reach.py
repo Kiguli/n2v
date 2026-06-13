@@ -15,7 +15,7 @@ from typing import List
 
 import numpy as np
 
-from n2v.sets import Box, Hexatope, Octatope, Star, Zono
+from n2v.sets import Box, Star, Zono
 from n2v.nn.layer_ops._translate import translate_set
 
 
@@ -53,9 +53,3 @@ def positional_encoding_zono(layer, input_zonos: List[Zono]) -> List[Zono]:
     return _apply(layer, input_zonos)
 
 
-def positional_encoding_hexatope(layer, input_sets: List[Hexatope]) -> List[Hexatope]:
-    return _apply(layer, input_sets)
-
-
-def positional_encoding_octatope(layer, input_sets: List[Octatope]) -> List[Octatope]:
-    return _apply(layer, input_sets)

@@ -126,23 +126,19 @@ def _validate_reach_config(method, config, **kwargs):
 FUNCTION_TO_MODULE_CLS: Dict[type, Type[nn.Module]] = {
     F.relu: nn.ReLU,
     torch.relu: nn.ReLU,
-    F.relu6: nn.ReLU6,
-    # NOTE (audit T0-2 / C6 / PR-1 audit C1): do NOT add ``F.elu``,
-    # ``F.leaky_relu``, or ``F.gelu`` here. ``_function_node_to_module``
-    # consults this dict FIRST. The dict value is constructed via ``cls()``
-    # with no kwargs, so a custom ``negative_slope`` / ``alpha`` /
-    # ``approximate`` on the call_function node would be silently dropped,
-    # producing an unsound (under-approximating) reach that excludes the
-    # true output (counterexamples: ``F.leaky_relu(x, negative_slope=0.5)``
-    # returns reach ``[-0.02, -0.005]`` while the true output is
-    # ``[-1.0, -0.25]``; ``F.gelu(x, approximate='tanh')`` routes through
-    # the erf-form floor -0.169972 while the tanh form dips to -0.170041
-    # near x = -0.7517, producing an above-floor lower bound). The
-    # dedicated parameter-extraction branches in ``_function_node_to_module``
-    # below correctly read the kwargs and must remain the only path for
-    # these three functions.
-    F.silu: nn.SiLU,
-    F.hardswish: nn.Hardswish,
+    # NOTE (audit T0-2 / C6 / PR-1 audit C1): do NOT add ``F.leaky_relu``
+    # or ``F.gelu`` here. ``_function_node_to_module`` consults this dict
+    # FIRST. The dict value is constructed via ``cls()`` with no kwargs,
+    # so a custom ``negative_slope`` / ``approximate`` on the
+    # call_function node would be silently dropped, producing an unsound
+    # (under-approximating) reach that excludes the true output
+    # (counterexamples: ``F.leaky_relu(x, negative_slope=0.5)`` returns
+    # reach ``[-0.02, -0.005]`` while the true output is ``[-1.0, -0.25]``;
+    # ``F.gelu(x, approximate='tanh')`` routes through the erf-form floor
+    # -0.169972 while the tanh form dips to -0.170041 near x = -0.7517,
+    # producing an above-floor lower bound). The dedicated parameter-
+    # extraction branches in ``_function_node_to_module`` below correctly
+    # read the kwargs and must remain the only path for these functions.
     torch.sigmoid: nn.Sigmoid,
     F.sigmoid: nn.Sigmoid,
     torch.tanh: nn.Tanh,
@@ -329,13 +325,6 @@ def _function_node_to_module(
                 and not isinstance(node.args[1], fx.Node)):
             slope = node.args[1]
         return nn.LeakyReLU(negative_slope=slope)
-
-    if fn is F.elu:
-        alpha = node.kwargs.get('alpha', 1.0)
-        if (len(node.args) > 1
-                and not isinstance(node.args[1], fx.Node)):
-            alpha = node.args[1]
-        return nn.ELU(alpha=alpha)
 
     if fn is F.gelu:
         # PR-1 audit C1: F.gelu(x, approximate='tanh') silently dropped the
@@ -964,22 +953,11 @@ def _handle_multi_input_op(
     the caller falls through to the single-input dispatcher).
 
     Supported layers (and the helper they call):
-      * ``n2v.nn.layers.DagAdd``                   → dag_add_reach.dag_add_box
-      * ``n2v.nn.layers.Concat2D``                 → concat2d_reach.concat2d_box
-      * ``n2v.nn.layers.SelectiveFeatureFusion``   → SFF_reach.selective_feature_fusion_box
       * ``n2v.nn.layers.SoftmaxAttention``         → softmax_attention_reach.softmax_attention_{box,star_approx}
     """
     # Local imports keep top-of-file import cost low and break a potential cycle.
-    from n2v.nn.layers.dag_add import DagAdd
-    from n2v.nn.layers.concat2d import Concat2D
-    from n2v.nn.layers.selective_feature_fusion import SelectiveFeatureFusion
     from n2v.nn.layers.softmax_attention import SoftmaxAttention
-    from n2v.nn.layer_ops import (
-        dag_add_reach,
-        concat2d_reach,
-        selective_feature_fusion_reach,
-        softmax_attention_reach,
-    )
+    from n2v.nn.layer_ops import softmax_attention_reach
 
     # Gather one set-stream per fx.Node argument.
     #
@@ -1066,25 +1044,6 @@ def _handle_multi_input_op(
 
     if len(streams) < 2:
         # Not a multi-input call; let the single-input dispatcher handle it.
-        return None
-
-    primary, extras = streams[0], streams[1:]
-
-    if isinstance(module, DagAdd):
-        if set_type is Box:
-            return dag_add_reach.dag_add_box(primary, extras)
-        return None  # Box only per nnVLA catalog.
-
-    if isinstance(module, Concat2D):
-        if set_type is Box:
-            return concat2d_reach.concat2d_box(primary, extras)
-        return None
-
-    if isinstance(module, SelectiveFeatureFusion):
-        if set_type is Box:
-            return selective_feature_fusion_reach.selective_feature_fusion_box(
-                primary, extras
-            )
         return None
 
     if isinstance(module, SoftmaxAttention):

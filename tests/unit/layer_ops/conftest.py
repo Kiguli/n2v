@@ -208,7 +208,11 @@ def assert_reach_contains_forward(
         f"reach_fn returned {len(out_sets)} sets; expected 1"
     )
     out_set = out_sets[0]
-    if hasattr(out_set, "get_bounds"):
+    if isinstance(out_set, (Hexatope, Octatope)):
+        # Copilot review: Hexatope/Octatope.get_bounds() requires a
+        # solver argument; use the zero-arg IBP envelope instead.
+        out_lb, out_ub = out_set.estimate_ranges()
+    elif hasattr(out_set, "get_bounds"):
         out_lb, out_ub = out_set.get_bounds()
     else:
         out_lb, out_ub = out_set.estimate_ranges()

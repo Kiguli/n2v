@@ -155,61 +155,12 @@ def gelu_tanh_zono(input_zonos):
 
 
 def _box_lift_lb_ub(input_set):
-    """Fast IBP (lb, ub). Hex/Oct take a solver arg on get_bounds; use
-    their zero-arg ``estimate_ranges`` IBP method instead."""
-    from n2v.sets import Hexatope, Octatope
-
-    if isinstance(input_set, (Hexatope, Octatope)):
-        lb, ub = input_set.estimate_ranges()
-    elif hasattr(input_set, "get_bounds"):
+    """Fast IBP (lb, ub) for Star/Zono/Box."""
+    if hasattr(input_set, "get_bounds"):
         lb, ub = input_set.get_bounds()
     else:
         lb, ub = input_set.get_ranges()
     return np.asarray(lb).reshape(-1, 1), np.asarray(ub).reshape(-1, 1)
-
-
-def gelu_hexatope(input_hexatopes):
-    """Sound (box-lifted) Hexatope reach for the exact (erf) GELU."""
-    from n2v.sets import Hexatope
-    out = []
-    for h in input_hexatopes:
-        lb, ub = _box_lift_lb_ub(h)
-        box = gelu_box([Box(lb, ub)])[0]
-        out.append(Hexatope.from_bounds(box.lb, box.ub))
-    return out
-
-
-def gelu_tanh_hexatope(input_hexatopes):
-    """Sound (box-lifted) Hexatope reach for the tanh-approximation GELU."""
-    from n2v.sets import Hexatope
-    out = []
-    for h in input_hexatopes:
-        lb, ub = _box_lift_lb_ub(h)
-        box = gelu_tanh_box([Box(lb, ub)])[0]
-        out.append(Hexatope.from_bounds(box.lb, box.ub))
-    return out
-
-
-def gelu_octatope(input_octatopes):
-    """Sound (box-lifted) Octatope reach for the exact (erf) GELU."""
-    from n2v.sets import Octatope
-    out = []
-    for o in input_octatopes:
-        lb, ub = _box_lift_lb_ub(o)
-        box = gelu_box([Box(lb, ub)])[0]
-        out.append(Octatope.from_bounds(box.lb, box.ub))
-    return out
-
-
-def gelu_tanh_octatope(input_octatopes):
-    """Sound (box-lifted) Octatope reach for the tanh-approximation GELU."""
-    from n2v.sets import Octatope
-    out = []
-    for o in input_octatopes:
-        lb, ub = _box_lift_lb_ub(o)
-        box = gelu_tanh_box([Box(lb, ub)])[0]
-        out.append(Octatope.from_bounds(box.lb, box.ub))
-    return out
 
 
 def gelu_tanh_star_approx(input_stars: List[Star]) -> List[Star]:

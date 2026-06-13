@@ -1,24 +1,21 @@
 """O(n) constant translation of reachable sets: ``y = x + t``.
 
-Several layers reduce to adding a constant vector (positional encodings,
-segment embeddings, frozen additive skips). Routing those through a
-dense identity ``nn.Linear(n, n)`` costs O(n^2) memory/time and OOMs at
-transformer-flattened sizes (Copilot review). A translation only moves
-the set's centre:
+The ViT position-embedding add reduces to adding a constant vector.
+Routing that through a dense identity ``nn.Linear(n, n)`` costs O(n^2)
+memory/time and OOMs at transformer-flattened sizes (Copilot review).
+A translation only moves the set's centre:
 
 * Star/ImageStar: add to the centre column of ``V`` (generators,
   constraints and predicate bounds are unchanged -- exact image).
 * Zono/ImageZono: add to ``c``.
 * Box: add to both bounds.
-* Hexatope/Octatope: add to ``center``; the constraint kernel is
-  deep-copied unchanged, mirroring ``affine_map`` with ``W = I``.
 """
 
 from __future__ import annotations
 
 import numpy as np
 
-from n2v.sets import Box, Hexatope, Octatope, Star, Zono
+from n2v.sets import Box, Star, Zono
 from n2v.sets.image_star import ImageStar
 from n2v.sets.image_zono import ImageZono
 
@@ -61,14 +58,6 @@ def translate_set(s, t: np.ndarray):
 
     if isinstance(s, Box):
         return Box(s.lb + t.reshape(-1, 1), s.ub + t.reshape(-1, 1))
-
-    if isinstance(s, Hexatope):
-        center = np.asarray(s.center, dtype=np.float64).reshape(-1) + t
-        return Hexatope(center, s.generators.copy(), s.dcs.copy())
-
-    if isinstance(s, Octatope):
-        center = np.asarray(s.center, dtype=np.float64).reshape(-1) + t
-        return Octatope(center, s.generators.copy(), s.utvpi.copy())
 
     raise TypeError(
         f"translate_set: unsupported set type {type(s).__name__}"

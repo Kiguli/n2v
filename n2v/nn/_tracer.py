@@ -38,34 +38,16 @@ def _n2v_leaf_module_types() -> Tuple[Type[nn.Module], ...]:
 
     Lazy import to avoid an import cycle with ``n2v.nn.layers.__init__``.
 
-    PR-1 audit I5: not every wrapper in ``__all__`` has a dispatcher
-    branch. Treating one as a leaf without a helper causes ``__call__``
-    to fall through ``_registry_lookup`` -> ``None`` ->
-    ``NotImplementedError`` -- a coverage REGRESSION on previously
-    decomposable models (pre-T1-7 fx happily descended into the
-    forward body). We explicitly EXCLUDE wrappers whose forward is
-    composed entirely of primitives the dispatcher can already handle,
-    so fx can decompose them. This is the "whitelist" half of I5; the
-    "implement helper" half is solved per-wrapper as needs arise.
+    Every wrapper in ``n2v.nn.layers.__all__`` has a dedicated dispatcher
+    branch and is designed to be dispatched as a single ``call_module``
+    node, not decomposed into primitives by fx -- so all of them are
+    treated as leaves.
     """
-    # All wrappers from n2v.nn.layers are candidates -- they are designed
-    # to be dispatched as a single node, not decomposed via fx.
     from n2v.nn import layers as _layers
-
-    # Wrappers whose forward decomposes cleanly into primitives the
-    # dispatcher already supports. Leaving these as fx leaves would
-    # block ``__call__`` from ever invoking a helper. See I5.
-    _EXCLUDED = {
-        # ParallelResidual: y = x + a(x) + b(x). fx decomposes to two
-        # operator.add calls (set + set), both already handled.
-        "ParallelResidual",
-    }
 
     leaf_types: List[Type[nn.Module]] = []
     # Public wrappers from n2v.nn.layers.__all__.
     for name in getattr(_layers, "__all__", []):
-        if name in _EXCLUDED:
-            continue
         obj = getattr(_layers, name, None)
         if isinstance(obj, type) and issubclass(obj, nn.Module):
             leaf_types.append(obj)

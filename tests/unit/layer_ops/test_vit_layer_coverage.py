@@ -1,23 +1,22 @@
-"""Set-type coverage tests for every layer / primitive this PR touched.
+"""Set-type coverage tests for the ViT layers / primitives in this PR.
 
 The ViT integration test (``tests/integration/test_minimal_vit.py``)
 only exercises the Zono path because that is what the benchmark needs.
-This file pins **every** set type for each layer/primitive added or
-modified by this PR, so future regressions on Box / Star / Hexatope /
-Octatope are caught by CI:
+This file pins the **Box / Star / Zono** reach for each ViT layer and
+primitive added by this PR, so future regressions are caught by CI:
 
-  * PatchEmbed           — Box, Star, Zono, Hexatope, Octatope
-  * LayerNorm (single-token)  — Box, Star, Zono, Hexatope, Octatope
-  * GELU (erf + tanh)    — Box, Star, Zono, Hexatope, Octatope
-  * Linear (per-token block-tile) — Box, Star, Zono, Hexatope, Octatope
-  * fx ``operator.add`` (set + constant)  — Star, Zono, Box, Hex, Oct
-  * fx ``operator.getitem`` (tensor slice) — Star, Zono, Box, Hex, Oct
-  * SoftmaxAttention multi-input  — Box, Star, Zono, Hex, Oct
+  * PatchEmbed           — Box, Star, Zono
+  * LayerNorm (single-token)  — Box, Star, Zono
+  * GELU (erf + tanh)    — Box, Star, Zono
+  * Linear (per-token block-tile) — Box, Star, Zono (+ base Hex/Oct)
+  * fx ``operator.add`` (set + constant / set + set) — Box, Star, Zono
+  * fx ``operator.getitem`` (tensor slice) — Box, Star, Zono
+  * SoftmaxAttention multi-input — Box, Star, Zono
 
 Each test instantiates the relevant layer / op, builds a small input
-set of the right type, runs the reach helper directly via the
-dispatcher, and asserts shape + finite bounds + box containment of
-one concrete forward sample where applicable.
+set of the right type, runs the reach helper via the dispatcher, and
+asserts shape + finite bounds + Monte-Carlo containment of concrete
+forward samples where applicable.
 """
 
 from __future__ import annotations
@@ -78,7 +77,7 @@ def _bounds_of(s):
 # ----------------------------- LayerNorm -------------------------------------
 
 
-def test_layernorm_box_star_zono_hex_oct_single_token():
+def test_layernorm_box_star_zono_single_token():
     """Audit N7/N11: previously asserted only ``isfinite`` -- a vacuous
     ``[-inf, +inf]`` envelope would pass. Now: assert Monte-Carlo
     containment of 32 random forward samples in the reach bounds.
@@ -92,8 +91,6 @@ def test_layernorm_box_star_zono_hex_oct_single_token():
         (box, lambda: layernorm_reach.layernorm_box(layer, [box])),
         (_flat_star(box), lambda: layernorm_reach.layernorm_star_approx(layer, [_flat_star(box)])),
         (_flat_zono(box), lambda: layernorm_reach.layernorm_zono(layer, [_flat_zono(box)])),
-        (_flat_hex(box), lambda: layernorm_reach.layernorm_hexatope(layer, [_flat_hex(box)])),
-        (_flat_oct(box), lambda: layernorm_reach.layernorm_octatope(layer, [_flat_oct(box)])),
     ):
         out = helper()
         assert len(out) == 1
@@ -114,7 +111,7 @@ def test_layernorm_box_star_zono_hex_oct_single_token():
 
 
 @pytest.mark.parametrize("approximate", ["none", "tanh"])
-def test_gelu_box_star_zono_hex_oct(approximate):
+def test_gelu_box_star_zono(approximate):
     layer = nn.GELU(approximate=approximate)
     layer.eval()
     lb = np.array([-2.0, -0.5, 0.0])
@@ -122,7 +119,7 @@ def test_gelu_box_star_zono_hex_oct(approximate):
     box = _flat_box(lb, ub)
 
     for set_in in (
-        box, _flat_star(box), _flat_zono(box), _flat_hex(box), _flat_oct(box),
+        box, _flat_star(box), _flat_zono(box),
     ):
         out = dispatcher.reach_layer(layer, [set_in], "approx")
         assert len(out) == 1
@@ -181,158 +178,6 @@ def test_linear_block_tile_across_all_set_types():
         ),
         n_samples=32, input_shape=(1, L, 3),
     )
-
-
-def test_mix_ffn_zono_end_to_end_audit_C3():
-    """PR-1 audit C3: MixFFN was unreachable end-to-end because
-    ``mix_ffn_passthrough`` raised unconditionally while T1-7 made
-    MixFFN an fx leaf. Now: implement the forward (fc1 -> reshape ->
-    dwconv -> flatten -> GELU -> fc2) directly and verify the Zono
-    path completes without raising. Pin: output shape and
-    Monte-Carlo containment of one concrete forward sample.
-    """
-    from n2v.nn.layers.mix_ffn import MixFFN
-    from n2v.nn.layer_ops.mix_ffn_reach import mix_ffn_passthrough
-
-    torch.manual_seed(0)
-    L = 4   # 2x2 spatial layout
-    dim = 2
-    hidden = 4
-    layer = MixFFN(dim=dim, hidden_dim=hidden).eval()
-
-    # Flat token-major input box of dim L*dim = 8.
-    lb_vec = np.linspace(0.0, 0.1, L * dim)
-    ub_vec = lb_vec + 0.05
-    z_in = Zono.from_bounds(
-        lb_vec.reshape(-1, 1), ub_vec.reshape(-1, 1),
-    )
-    out = mix_ffn_passthrough(layer, [z_in], n_tokens=L)
-    assert len(out) == 1
-    assert out[0].dim == L * dim, f"expected dim {L*dim}, got {out[0].dim}"
-
-    # Monte-Carlo containment: random samples in the input box should
-    # map to outputs inside the reach bounds.
-    out_lb, out_ub = out[0].get_bounds()
-    out_lb = np.asarray(out_lb).flatten()
-    out_ub = np.asarray(out_ub).flatten()
-    rng = np.random.default_rng(0)
-    for _ in range(8):
-        x_sample = rng.uniform(lb_vec, ub_vec)
-        x_t = torch.from_numpy(x_sample.astype(np.float32)).reshape(1, L, dim)
-        with torch.no_grad():
-            y_t = layer(x_t).detach().cpu().numpy().flatten()
-        assert np.all(out_lb - 1e-6 <= y_t), (
-            f"MC sample below reach lb: y={y_t}, lb={out_lb}"
-        )
-        assert np.all(y_t <= out_ub + 1e-6), (
-            f"MC sample above reach ub: y={y_t}, ub={out_ub}"
-        )
-
-
-def test_mix_ffn_dispatcher_routes_zono_hex_oct_audit_C3_followup():
-    """Final-review follow-up to audit C3: the helper supported all five
-    set types but the DISPATCHER only routed Star and Box -- Zono /
-    Hex / Oct fell through to ``_registry_lookup`` ->
-    ``NotImplementedError``. The original C3 test called
-    ``mix_ffn_passthrough`` directly, which is exactly how the gap
-    stayed invisible. This test goes through ``dispatcher.reach_layer``
-    so the route itself is pinned.
-    """
-    from n2v.nn.layers.mix_ffn import MixFFN
-
-    torch.manual_seed(0)
-    L, dim, hidden = 4, 2, 4
-    layer = MixFFN(dim=dim, hidden_dim=hidden).eval()
-
-    lb_vec = np.linspace(0.0, 0.1, L * dim)
-    ub_vec = lb_vec + 0.05
-    box = _flat_box(lb_vec, ub_vec)
-
-    for set_in in (_flat_zono(box), _flat_hex(box), _flat_oct(box)):
-        out = dispatcher.reach_layer(
-            layer, [set_in], "approx", n_tokens=L,
-        )
-        assert len(out) == 1
-        lb_o, ub_o = _bounds_of(out[0])
-        assert lb_o.size == L * dim, (
-            f"{type(set_in).__name__}: expected dim {L * dim}, "
-            f"got {lb_o.size}"
-        )
-        assert np.all(np.isfinite(lb_o)) and np.all(np.isfinite(ub_o))
-
-
-def test_mix_ffn_missing_n_tokens_raises_audit_C3():
-    """Audit C3: MixFFN reach without an explicit ``n_tokens`` signal
-    must raise -- the dwconv shape is unrecoverable from a flat set.
-    """
-    from n2v.nn.layers.mix_ffn import MixFFN
-    from n2v.nn.layer_ops.mix_ffn_reach import mix_ffn_passthrough
-
-    layer = MixFFN(dim=2, hidden_dim=4).eval()
-    z_in = Zono.from_bounds(
-        np.zeros((8, 1)), np.ones((8, 1)),
-    )
-    with pytest.raises(NotImplementedError, match="n_tokens"):
-        mix_ffn_passthrough(layer, [z_in])
-
-
-def test_parallel_residual_decomposes_via_fx_audit_I5():
-    """PR-1 audit I5: ParallelResidual must NOT be an fx leaf -- it
-    has no reach helper, so leaf treatment caused
-    ``_registry_lookup`` -> ``None`` -> ``NotImplementedError``. Now
-    excluded from the leaf list so fx decomposes
-    ``y = x + a(x) + b(x)`` into two operator.add(set, set) calls.
-    """
-    from n2v.nn import NeuralNetwork
-    from n2v.nn.layers.parallel_residual import ParallelResidual
-
-    class TinyParallelResid(nn.Module):
-        def __init__(self):
-            super().__init__()
-            self.block = ParallelResidual(
-                sublayer_a=nn.Linear(3, 3, bias=False),
-                sublayer_b=nn.Linear(3, 3, bias=False),
-            )
-            with torch.no_grad():
-                self.block.sublayer_a.weight.zero_()
-                self.block.sublayer_b.weight.zero_()
-
-        def forward(self, x):
-            return self.block(x)
-
-    model = TinyParallelResid().eval()
-    box = _flat_box(np.array([0.0, 1.0, 2.0]), np.array([0.5, 1.5, 2.5]))
-    out = NeuralNetwork(model).reach(box, method="approx")
-    # With both sublayers zeroed, y = x + 0 + 0 = x.
-    np.testing.assert_allclose(
-        np.asarray(out[0].lb).flatten(), [0.0, 1.0, 2.0], atol=1e-9,
-    )
-    np.testing.assert_allclose(
-        np.asarray(out[0].ub).flatten(), [0.5, 1.5, 2.5], atol=1e-9,
-    )
-
-
-def test_overlap_patch_embed_zono_dispatch_lands_audit_I5():
-    """PR-1 audit I5: OverlapPatchEmbed must have a dispatcher branch.
-    Previously absent -> _registry_lookup raise. Now: route the
-    Conv2d + flatten + transpose through PatchEmbed reach + apply
-    LayerNorm. Smoke-tests dispatch only; concrete-forward containment
-    is exercised by the PatchEmbed test sweep.
-    """
-    from n2v.nn.layers import OverlapPatchEmbed
-    from n2v.nn.layer_ops import overlap_patch_embed_reach as ope
-
-    layer = OverlapPatchEmbed(
-        in_channels=1, embed_dim=4, patch_size=2, stride=2,
-    ).eval()
-    zono_in = ImageZono.from_bounds(
-        np.zeros(4), np.ones(4),
-        height=2, width=2, num_channels=1,
-    )
-    out = ope.overlap_patch_embed_zono(layer, [zono_in])
-    assert len(out) == 1
-    # 2x2 image / (2x2 patch, stride 2) -> 1x1 = 1 token of embed_dim=4.
-    assert out[0].dim == 4
 
 
 def test_patch_embed_box_multichannel_requires_image_shape_audit_I2():
@@ -514,32 +359,6 @@ def test_patch_embed_box(patch_embed_layer):
     assert out[0].dim == expected_dim
 
 
-def test_patch_embed_hexatope(patch_embed_layer):
-    img_size = 4
-    box = _flat_box(
-        np.zeros(img_size * img_size), np.ones(img_size * img_size),
-    )
-    hex_in = Hexatope.from_bounds(box.lb, box.ub)
-    out = patch_embed_reach.patch_embed_hexatope(patch_embed_layer, [hex_in])
-    assert len(out) == 1
-    expected_dim = ((img_size // 2) ** 2) * 2
-    lb_o, ub_o = _bounds_of(out[0])
-    assert lb_o.size == expected_dim
-
-
-def test_patch_embed_octatope(patch_embed_layer):
-    img_size = 4
-    box = _flat_box(
-        np.zeros(img_size * img_size), np.ones(img_size * img_size),
-    )
-    oct_in = Octatope.from_bounds(box.lb, box.ub)
-    out = patch_embed_reach.patch_embed_octatope(patch_embed_layer, [oct_in])
-    assert len(out) == 1
-    expected_dim = ((img_size // 2) ** 2) * 2
-    lb_o, ub_o = _bounds_of(out[0])
-    assert lb_o.size == expected_dim
-
-
 # ----------------------------- fx operator.add (set + constant) -------------
 
 
@@ -591,19 +410,14 @@ def test_activation_box_floor_is_below_true_min_on_narrow_intervals():
     constant, producing an above-floor lower bound.
 
     Counterexamples (each verified ≥ 1e-12 unsound on the buggy code):
-        * GELU tanh: Box [-0.7530, -0.7520]
         * GELU erf:  Box [-0.75179155, -0.75179]
-        * SiLU:      Box [-1.27848, -1.27840]
+        * GELU tanh: Box [-0.7530, -0.7520]
 
     Pin: reach lb must be ≤ scipy's bounded minimum on the box.
     """
     import scipy.optimize as opt
     from math import erf, tanh as math_tanh, sqrt
     from n2v.nn.layer_ops.gelu_reach import gelu_box, gelu_tanh_box
-    from n2v.nn.layer_ops.silu_reach import silu_box
-
-    def _silu(x):
-        return x / (1 + np.exp(-x))
 
     def _gelu_erf(x):
         return 0.5 * x * (1.0 + erf(x / sqrt(2.0)))
@@ -614,7 +428,6 @@ def test_activation_box_floor_is_below_true_min_on_narrow_intervals():
         ))
 
     cases = [
-        ("silu",      silu_box,      _silu,      -1.27848, -1.27840),
         ("gelu_erf",  gelu_box,      _gelu_erf,  -0.75179155, -0.75179),
         ("gelu_tanh", gelu_tanh_box, _gelu_tanh, -0.75300, -0.75200),
     ]
@@ -636,141 +449,6 @@ def test_activation_box_floor_is_below_true_min_on_narrow_intervals():
 
 
 # ------- CLSToken / ConcatWithFrozenSkip Hex+Oct coverage (audit I7) --------
-
-
-def test_hex_oct_from_bounds_contains_box_corners_audit_N13():
-    """PR-1 audit N13: every box-lifted Hex/Oct reach helper relies on
-    ``set_type.from_bounds(lb, ub)`` producing a sound enclosure of
-    ``[lb, ub]``. The PR-1 tests only assert ``estimate_ranges``
-    round-trips closely; they never sample IN the original box and
-    verify Hex/Oct containment. A bug in ``from_bounds`` would silently
-    invalidate every box-lifted helper (PatchEmbed, CLSToken,
-    ConcatWithFrozenSkip, OverlapPatchEmbed, MixFFN, GELU/SiLU
-    Hex/Oct, etc.).
-
-    Pin: build Hex / Oct via ``from_bounds`` and check that 64 random
-    samples inside the input box are contained in the set's IBP envelope.
-    """
-    rng = np.random.default_rng(0)
-    lb = np.array([[-0.5], [0.0], [0.3], [1.2]])
-    ub = np.array([[0.5], [1.0], [0.7], [2.5]])
-
-    for cls in (Hexatope, Octatope):
-        s = cls.from_bounds(lb, ub)
-        env_lb, env_ub = s.estimate_ranges()
-        env_lb = np.asarray(env_lb).flatten()
-        env_ub = np.asarray(env_ub).flatten()
-        # IBP envelope must enclose the construction box.
-        assert np.all(env_lb <= lb.flatten() + 1e-9), (
-            f"{cls.__name__}.from_bounds envelope lb={env_lb} above "
-            f"construction lb={lb.flatten()}"
-        )
-        assert np.all(env_ub >= ub.flatten() - 1e-9), (
-            f"{cls.__name__}.from_bounds envelope ub={env_ub} below "
-            f"construction ub={ub.flatten()}"
-        )
-        # Sample inside [lb, ub]; each sample must lie inside the
-        # envelope (containment is necessary; tightness is not asserted).
-        for _ in range(64):
-            x = rng.uniform(lb.flatten(), ub.flatten())
-            assert np.all(env_lb - 1e-9 <= x), (
-                f"{cls.__name__}: sample {x} below envelope {env_lb}"
-            )
-            assert np.all(x <= env_ub + 1e-9), (
-                f"{cls.__name__}: sample {x} above envelope {env_ub}"
-            )
-
-
-def test_cls_token_hexatope_box_lifted_sound():
-    """PR-1 audit I7: CLSToken Hexatope branch was previously absent in
-    the dispatcher -- any end-to-end ViT with Hex reach raised through
-    _registry_lookup. Box-lifted IBP path is sound; pin: a Hex input
-    routed through CLSToken must return a Hex with the expected
-    prepended-token bounds.
-    """
-    from n2v.nn.layers.cls_token import CLSToken
-    from n2v.nn.layer_ops import cls_token_reach
-
-    layer = CLSToken(dim=2)
-    with torch.no_grad():
-        layer.token.copy_(torch.tensor([0.5, -0.5]))
-
-    hex_in = Hexatope.from_bounds(
-        np.array([[0.0], [0.1], [0.2], [0.3]]),
-        np.array([[1.0], [1.1], [1.2], [1.3]]),
-    )
-    out = cls_token_reach.cls_token_hexatope(layer, [hex_in])
-    assert len(out) == 1
-    assert isinstance(out[0], Hexatope)
-    lb, ub = out[0].estimate_ranges()
-    lb = np.asarray(lb).flatten()
-    ub = np.asarray(ub).flatten()
-    # Expected: [0.5, -0.5, 0.0, 0.1, 0.2, 0.3] / [0.5, -0.5, 1.0, 1.1, 1.2, 1.3]
-    np.testing.assert_allclose(lb, [0.5, -0.5, 0.0, 0.1, 0.2, 0.3], atol=1e-9)
-    np.testing.assert_allclose(ub, [0.5, -0.5, 1.0, 1.1, 1.2, 1.3], atol=1e-9)
-
-
-def test_cls_token_octatope_box_lifted_sound():
-    from n2v.nn.layers.cls_token import CLSToken
-    from n2v.nn.layer_ops import cls_token_reach
-
-    layer = CLSToken(dim=2)
-    with torch.no_grad():
-        layer.token.copy_(torch.tensor([0.5, -0.5]))
-
-    oct_in = Octatope.from_bounds(
-        np.array([[0.0], [0.1]]),
-        np.array([[1.0], [1.1]]),
-    )
-    out = cls_token_reach.cls_token_octatope(layer, [oct_in])
-    assert isinstance(out[0], Octatope)
-    lb, ub = out[0].estimate_ranges()
-    lb = np.asarray(lb).flatten()
-    ub = np.asarray(ub).flatten()
-    np.testing.assert_allclose(lb, [0.5, -0.5, 0.0, 0.1], atol=1e-9)
-    np.testing.assert_allclose(ub, [0.5, -0.5, 1.0, 1.1], atol=1e-9)
-
-
-def test_concat_with_frozen_skip_hexatope_box_lifted_sound():
-    """Audit I7: ConcatWithFrozenSkip Hex/Oct branches were absent."""
-    from n2v.nn.layers.concat_with_frozen_skip import ConcatWithFrozenSkip
-    from n2v.nn.layer_ops import concat_with_frozen_skip_reach
-
-    layer = ConcatWithFrozenSkip(
-        skip=torch.tensor([0.7, 0.8]), dim=-1,
-    )
-
-    hex_in = Hexatope.from_bounds(
-        np.array([[0.0], [0.1]]),
-        np.array([[1.0], [1.1]]),
-    )
-    out = concat_with_frozen_skip_reach.concat_with_frozen_skip_hexatope(
-        layer, [hex_in],
-    )
-    assert isinstance(out[0], Hexatope)
-    lb, ub = out[0].estimate_ranges()
-    lb = np.asarray(lb).flatten()
-    ub = np.asarray(ub).flatten()
-    np.testing.assert_allclose(lb, [0.0, 0.1, 0.7, 0.8], atol=1e-9)
-    np.testing.assert_allclose(ub, [1.0, 1.1, 0.7, 0.8], atol=1e-9)
-
-
-def test_concat_with_frozen_skip_octatope_box_lifted_sound():
-    from n2v.nn.layers.concat_with_frozen_skip import ConcatWithFrozenSkip
-    from n2v.nn.layer_ops import concat_with_frozen_skip_reach
-
-    layer = ConcatWithFrozenSkip(
-        skip=torch.tensor([0.7, 0.8]), dim=-1,
-    )
-
-    oct_in = Octatope.from_bounds(
-        np.array([[0.0], [0.1]]),
-        np.array([[1.0], [1.1]]),
-    )
-    out = concat_with_frozen_skip_reach.concat_with_frozen_skip_octatope(
-        layer, [oct_in],
-    )
-    assert isinstance(out[0], Octatope)
 
 
 # ----------------------------- F.gelu approximate kwarg leak (audit C1) -----
@@ -1468,15 +1146,3 @@ def test_linear_star_image_star_l_gt_1_flattens_and_rewraps_dive_review():
             assert flat.contains(y), "per-pixel forward escaped reach"
 
 
-def test_add_with_frozen_skip_token_axis_skip_raises_dive_review():
-    """Deep-dive review: an (L, 1)-shaped skip broadcasts across the
-    feature axis in the concrete forward; the flat tiling modelled the
-    wrong function (executed escape +1.27). The reach must refuse it.
-    """
-    from n2v.nn.layers import AddWithFrozenSkip
-    from n2v.nn.layer_ops import add_with_frozen_skip_reach
-
-    layer = AddWithFrozenSkip(skip=torch.randn(3, 1))
-    box = _flat_box(np.zeros(12), np.ones(12))
-    with pytest.raises(NotImplementedError, match="feature axis"):
-        add_with_frozen_skip_reach.add_with_frozen_skip_box(layer, [box])

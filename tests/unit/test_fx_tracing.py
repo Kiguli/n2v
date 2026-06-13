@@ -261,45 +261,6 @@ class TestInlineActivationRegression:
             f"maximum -0.25."
         )
 
-    def test_functional_elu_preserves_extreme_alpha(self):
-        """T0-2 regression (audit C6): F.elu(..., alpha=3.0) must not be
-        silently rebuilt as nn.ELU() with the default alpha 1.0. The same
-        FUNCTION_TO_MODULE_CLS path that lost the leaky_relu slope was also
-        losing the ELU alpha, producing an unsound reach.
-
-        With alpha=3 over input [-3, 0], true ELU range is approximately
-        [-2.85, 0]. If alpha is silently set to 1.0 the reach floor becomes
-        ~-0.95 and true outputs near -2.85 fall outside the reported reach.
-        """
-        class SingleELU(nn.Module):
-            def __init__(self):
-                super().__init__()
-                self.fc = nn.Linear(1, 1, bias=False)
-                with torch.no_grad():
-                    self.fc.weight.copy_(torch.tensor([[1.0]]))
-
-            def forward(self, x):
-                return F.elu(self.fc(x), alpha=3.0)
-
-        model = SingleELU()
-        model.eval()
-        lb = np.array([-3.0])
-        ub = np.array([0.0])
-        input_star = Star.from_bounds(lb, ub)
-        output_stars = NeuralNetwork(model).reach(input_star, method='approx')
-        assert len(output_stars) == 1
-        out_lb, out_ub = output_stars[0].get_ranges()
-        # True ELU(x, alpha=3) at x=-3 is 3*(exp(-3) - 1) ≈ -2.85.
-        # If alpha was dropped to 1.0 the reach floor would be ~-0.95.
-        assert out_lb.flatten()[0] <= -2.85 + 1e-3, (
-            f"Reach lower bound {out_lb.flatten()[0]} is above the true ELU "
-            f"minimum ~-2.85 — alpha was silently dropped (unsound)."
-        )
-        assert out_ub.flatten()[0] >= 0.0 - 1e-6, (
-            f"Reach upper bound {out_ub.flatten()[0]} is below the true ELU "
-            f"maximum 0.0."
-        )
-
     def test_functional_vs_registered_parity(self):
         """Functional F.relu and registered nn.ReLU must produce identical bounds."""
         torch.manual_seed(42)
